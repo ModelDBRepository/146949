@@ -1,0 +1,295 @@
+// $Id: boxes.hoc,v 1.58 2010/08/12 14:20:15 billl Exp $
+
+print "Loading boxes.hoc..."
+
+{load_file("grvec.hoc")}
+// load_file("boxes.hoc")
+proc boxes () {}
+objref boxer, boxerl
+boxerl = new List()
+
+// factor(num) finds the factors that are closest together
+// NB: must be at top since declared external in template BX
+func factor () { local num, srt, ii
+  num = $1
+  srt = int(sqrt(num))
+  for (ii=srt;ii<num && num/ii!=int(num/ii);ii+=1) {}
+  if (ii>num/ii) ii=num/ii // return smaller factor
+  return ii
+}
+
+// template for putting up trays and decks
+begintemplate BX
+public mktray,mkdeck,name,boxes,map,unmap,closebox
+public min,max,attrnum,rows,cols,size,trnum,gl,stub,label,getg
+external factor,boxerl
+
+objref boxes[3], ob, gitem,gl,XO, nil, this
+double min[1],max[1],trnum[1]
+strdef temp_string_,name
+
+proc init () {
+  min = -1 max = -1
+  trnum=$1
+  gl = new List()
+}
+
+//mktray(panattr) graph out from llist of a panattr
+proc mktray () { local ci, ri, gi, m1, m2, bi
+  ob = $o1
+  cols=$3 rows=$2 size=rows*cols
+  if (numarg()==5) {xs=$4 ys=$5} else {xs=100 ys=50}
+  ri = 0 // count the rows
+  gi = 0 // count the graphs
+  boxes[0] = new VBox()
+  boxes[0].dismiss_action("closebox()")
+  boxes[0].intercept(1)
+  xpanel("",1)
+  xvarlabel(name)
+  xpanel()
+  for ri=0,rows-1 {
+    boxes[2] = new HBox()
+    boxes[2].intercept(1)
+    for ci=0,cols-1 {
+      gitem = new Graph(0)
+      gitem.view(0,-100,1000,50,0,0,xs,ys)
+      gl.append(gitem)
+      if (ob!=nil) ob.glist.append(gitem)
+      gi = gi+1
+    }
+    boxes[2].intercept(0)
+    boxes[2].map("")
+  }
+  boxes[0].intercept(0)
+  if (strcmp(name,"")==0 && ob!=nil) name=ob.filename
+  sprint(name,"%d:%s",trnum,name)
+  boxes[0].map(name)
+}
+
+proc map() { boxes[0].map() }
+proc unmap() { boxes[0].unmap() }
+
+proc closebox () { local ii,ix
+  ix=boxerl.index(this)
+  for (ii=gl.count-1;ii>=0;ii-=1) {
+    XO=gl.object(ii)
+    XO.unmap
+  }
+  if (ob!=nil) ob.glist.remove_all
+  gl.remove_all
+  boxes[0].unmap
+  boxes[0]=nil
+  boxes[2]=nil
+  boxerl.remove(ix)
+}
+
+obfunc getg () {
+  return gl.o($1*cols+$2)
+}
+
+proc mkdeck () { local rows, cols, ci, ri, gi, m1, m2
+  ob = $o1
+  if (min==-1 || max==-1) {
+    m1 = 0 m2 = ob.llist.count()-1
+  } else { m1=min    m2=max }
+  cnt = m2-m1+1
+  cols=factor(cnt) rows=cnt/factor(cnt)
+  ri = 0 // count the rows
+  gi = 0 // count the graphs
+  boxes[0] = new VBox()
+  boxes[0].intercept(1)
+  xpanel("",1)
+  xbutton("Next","boxes[1].flip_to(decknum=decknum+1)")
+  xbutton("Previous","boxes[1].flip_to(decknum=decknum-1)")
+  xpanel()
+  boxes[1] = new Deck()
+  boxes[1].intercept(1)
+  for ri=0,rows-1 {
+    boxes[2] = new HBox()
+    boxes[2].intercept(1)
+    for ci=0,cols-1 {
+      ob.rv(gi+m1)
+      gi = gi+1
+    }
+    boxes[2].intercept(0)
+    boxes[2].map("")
+  }
+  boxes[1].intercept(0)
+  boxes[1].map("")
+  boxes[0].intercept(0)
+  boxes[0].map("Deck")
+  decknum = 0
+  boxes[1].flip_to(decknum)
+  if (! ob.attr0) {
+    for ii = 0,gi-1 { 
+      ob.glist.object(ii).label(0.3,0.5,ob.llist.object(ii).name)
+    }
+  }
+}
+
+endtemplate BX
+
+obfunc mktray () { local i,na,rows,cols,xsz,ysz localobj o
+  if (numarg()==0) { print "mktray(attrnum,rows,cols[,xsize,ysize,label])"
+    print "Create a tray for attr panel ATTRNUM to superimpose upon."
+    return nil }
+  boxer = new BX(boxerl.count)
+  boxerl.append(boxer)
+  trnum=boxer.trnum
+  if (argtype(numarg())==2) { na=numarg()-1 i=numarg() boxer.name=$si 
+  } else                    { na=numarg() }
+  if (na==2) o=panobj else if (argtype(1)==0) o=GRV[$1] else if (argtype(1)==1) o=$o1
+  if (o!=nil) o.super = 1
+  if (argtype(1)==2) {
+    boxer.name=$s1
+    xsz=100 ysz=50
+    if (na/2==int(na/2)) {rows=factor($2) cols=$2/rows i=3} else {rows=$2 cols=$3 i=4}
+    if (argtype(i)==0) {xsz=$i i+=1 ysz=$i} // size of graphs
+    boxer.mktray(nil,rows,cols,xsz,ysz)
+  } else if        (na==5) { boxer.mktray(o,$2,$3,$4,$5)
+  } else if (na==3) { boxer.mktray(o,$2,$3) 
+  } else if (na==2) { boxer.mktray(o,$1,$2)
+    printf("Mapping trays to %s\n",o)
+  }
+  return boxer
+}
+
+proc rmtray () { local ix
+  ix=$1
+  if (boxerl.count<=1) boxerl.remove_all else {
+    for (ii=boxerl.count-1;ii>=0;ii-=1) {
+      if (boxerl.object(ii).attrnum==attrnum) boxerl.remove(ii) 
+    }}
+  remgrs(attrnum)
+  GRV[ix].super=0
+}
+
+proc trsz () {
+  if (boxerl.count>0) for ltr (XO,boxerl) printf("%d:%d x %d\n",XO.attrnum,XO.rows,XO.cols)
+}
+
+proc mktrpanl () {
+  xgetargs("Make Tray","mktray","Which","rows","cols","xsize","ysize","0,2,3,100,50")
+}
+
+//* disptray() redisp() redispv()
+proc disptray () { local ix,ii,jj,kk
+  if (numarg()==0) {print "disptray(ix[,cols])" return}
+  ix=$1
+  ii=GRV[ix].llist.count 
+  if (numarg()==2) jj=$2 else jj=factor(ii)
+  kk=GRV[ix].glist.count
+  mktray(GRV[ix],round(ii/jj),jj,100,50) 
+  GRV[ix].grall(0,ii-1)
+  for ltr(XO,GRV[ix].glist) if(i1>=kk) { 
+    XO.size(&x[0]) 
+    XO.size(x[0],x[1],x[2],x[3]) }
+}
+
+proc redisp () { local supsav
+  panobj=$o1
+  if (numarg()>=2) trnum=$2
+  supsav=panobj.super  panobj.super=1
+  for ltr(graphItem,boxerl.object(trnum).gl) {
+    graphItem.erase_all()
+    panobj.rv(i1)
+  }
+  panobj.super=supsav
+}
+
+// for bxit () {}  go through all the graphs in tray trnum
+// for bxit (g1,g2,g3,g4) {}  go through selected graphs
+// for bxit (-1,g1,g2) {}  go through g1-g2
+bxn=-1
+proc bxop () { g=boxerl.object(trnum).gl.object($1) graphItem=g}
+proc bxinc () { 
+  if (bxn>=boxerl.object(trnum).gl.count) bxn=0 else bxn+=1
+  g=boxerl.object(trnum).gl.object(bxn) 
+  graphItem=g
+}
+iterator bxit () { local i,ii
+  i1=0
+  if (numarg()>0) {
+    if (numarg()==3  && $1==-1) {
+      for ii = $2, $3 {
+        g=boxerl.object(trnum).gl.object(ii)
+        graphItem=g
+        iterator_statement
+        i1+=1
+      }
+    } else {
+      for i = 1, numarg() {
+        if (numarg()==1) XO=$o1.object(ii)
+        g=boxerl.object(trnum).gl.object($i)
+        graphItem=g
+        iterator_statement
+        i1+=1
+      }
+    }
+  } else {
+    for ii=0,boxerl.object(trnum).gl.count-1 {
+      g=boxerl.object(trnum).gl.object(ii)
+      graphItem=g
+      iterator_statement
+      i1+=1
+    }
+  }
+}
+
+// redispv(VEC,ATTRNUM,TRNUM) -- all args optional
+proc redispv () { local supsav
+  panobj=$o1
+  if (numarg()>=2) trnum=$2
+  supsav=panobj.super  panobj.super=1
+  for bxit() {
+    g.erase_all()
+    if (numarg()>0) panobj.rv($o1.x[i1]) else panobj.rv(vec.x[i1])
+  }
+  panobj.super=supsav
+}
+
+proc bxcomm () { 
+  if (numarg()==1) boxerl.object(boxerl.count-1).name=$s1 else {
+    boxerl.object(boxerl.count-1).name=comment }
+}
+
+//* gin() search through param strings to graph particular members of llist
+// eg regexp="SPCX SPTC SPSM " then 'gin(1)' to create regexp: 'SPCX.+%sSPTC.+%sSPSM.+%s'
+// gin("5","","") will find examples with SPCX=5 and graph SPTC against SPSM
+// ginpr() will search through llist and just print out the file names
+// meant to be used after running dir2pr() to get a summary file
+strdef regexp
+proc gin () { local i,a
+  a=allocvecs(1)
+  revec(mso[a]) tstr=regexp
+  for i=1,numarg() repl_str(tstr,"%s",$si,temp_string2_)  // replace sprint
+  for ltr(XO,panobj.llist,&y) if (strm(XO.name,tstr)) mso[a].append(y)
+  if (mso[a].size!=boxer.rows*boxer.cols) {
+    printf("gin() ERR: %d!=%dx%d\n",mso[a].size,boxer.rows,boxer.cols)
+    dealloc(a) return
+  }
+  geall(1)
+  for bxit() panobj.rv(mso[a].x[i1]) 
+  tstr=regexp 
+  repl_mstr(tstr,".\\+%s","=%s,",temp_string2_)
+  chop(tstr)
+  for i=1,numarg() repl_str(tstr,"%s",$si,temp_string2_)
+  sprint(tstr,"%s: %s",panobj.filename,tstr)
+  bxcomm(tstr)  print tstr
+  dealloc(a)
+}
+
+proc ginpr () { local base,i
+  if (numarg()==0) { 
+    print "Set regexp to begin: eg\n\tregexp=\"SMTC SPSM NSTC \" (space at end)"
+    print "Then call ginpr(regexp) to reset regexp"
+    print "Then call eg ginpr(\"0.015\",\"\",\"\") to list or gin(...) to graph"
+    return }
+  if (numarg()==1) { 
+    regexp=$s1 repl_mstr(regexp," ",".+%s,",tstr) 
+    chop(regexp,",")
+    print regexp return }
+  base=1 tstr=regexp // where they start numbering
+  for i=1,numarg() repl_str(tstr,"%s",$si,temp_string2_)  // replace sprint
+  for ltr(XO,panobj.llist,&y) if (strm(XO.name,tstr)) printf("%03d %s\n",base+y,XO.name)
+}

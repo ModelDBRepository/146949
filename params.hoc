@@ -1,0 +1,880 @@
+// $Id: params.hoc,v 1.113 2010/12/29 03:14:38 cliffk Exp $
+
+print "Loading params.hoc..."
+
+//* batch params
+jrsvn_INTF6=1e3
+jrsvd_INTF6=2e4
+jrtm_INTF6 = 1e3
+
+//* general params
+tstop = mytstop
+v_init=1000 // so keep v's as set randomly
+
+//* ARTC params
+mg_INTF6=1.6
+EAM_INTF6=65 // these are deviations above RMP
+ENM_INTF6=90
+EGA_INTF6=-15
+
+if(!autotune) if(useSTDP) seadsetting_INTF6 = 3 // plasticity on
+
+//* skin path traversal variables
+{declare("nqpath","o[1]","pathdim",colside+1,"pathtinc",100,"pathseed",6789,"pathsd",PI/1024)} //path on skin
+{declare("regpath",1)} // iff==1 makes regular path
+//* first few topographic stim related params
+{declare("SMW",colside+1)} // Number of stims in W dimension 
+{declare("SMH",colside+1)} // Number of stims in H dimension 
+{sprint(tstr,"o[%d][%d]",SMH,SMW)}
+{declare("SMG",tstr,"SMWGHT",50,"SMDIV",0,"useSM",0,"SMDUR",100,"SMNUM",25,"SMSEED",7861,"SMSTART",10e3)}
+
+//* Declarations
+
+dosetexvals=name_declared("wmatex")==0 // whether to set values in wmatex,ratex
+
+{sprint(tstr,"d[%d][%d]",CTYPi,STYPi)}
+{declare("wmatex",tstr,"ratex",tstr)} // weights,avg. rate of external inputs
+
+{declare("fih","o[1]","nstim","o[1]")}
+{vseed_stats(223481)}
+{rdm.MCellRan4(seed_stats)}
+{declare("vsgrpp",new Vector(CTYPi))} //% X 100 of cells of a type to stim, used in stim,sgrcells
+{declare("vsgrsidx",new Vector(CTYPi))} //startind index of cell to stim when using topstim
+{declare("sgrdur",mytstop)} //duration of stim in ms -- change this to turn off stimuli
+{declare("inputseed",1234)}
+inrtscf=1.0 // Stands for "input rate scale factor", needs to be reduced with large scales...
+{declare("sgrhzEE",300*inrtscf,"sgrhzEI",300*inrtscf,"sgrhzII",125*inrtscf,"sgrhzIE",125*inrtscf,"sgrhzNM",50*inrtscf,"sgron",1,"sgrdel",0)}
+{declare("sgrhzEE_E2sc",1.0,"sgrhzEE_E5Bsc",1.0,"sgrhzEE_E5Rsc",1.0,"sgrhzEE_E6sc",1.0)}//scales for sgrhzEE
+{declare("sgrhzdel",0.2)}//variance in sgrhz for an INTF6
+{declare("EXGain",15)} // gain for external inputs
+{declare("lcstim",new List())} // list of CSTIM objects
+{declare("nqwmex",new NQS("ct","sy","w","rate"))} // NQS passed to CSTIM init
+{sprint(tstr,"d[%d]",numcols)}
+{declare("EIBalance",tstr)} // whether to balance rate of external E/I inputs
+{declare("usens",1)} // whether to use NetStim in CSTIM templates -- saves memory
+declare("E2WEXGain",1,"E2REXGain",1) // gains for external inputs to E2 (1st is for E weights, 2nd is for E rates)
+declare("TCWEXGain",1,"TCREXGain",1) // gain for noise inputs to TC cells
+
+SCAHP=SCTH=1
+
+//* shock-related params
+{declare("MAXSHOCK",10)}
+{sprint(tstr,"d[%d][%d][%d][%d]",numcols,CTYPi,STYPi,MAXSHOCK)}
+{declare("wshock",tstr,"durshock",tstr,"prctshock",tstr,"nshock",tstr,"isishock",tstr,"startshock",tstr)}
+{declare("grpshockNetStim","o[1]","grpshockncl","o[1]")}
+{declare("grpshocktyp",0)}
+{declare("grpshockpct",10)}
+
+//* random stim-related params
+
+// <-- stccol
+//* "zip"-related params -- modulates strength of internal weights from E->X
+declare("ZipONT",0,"zid","o[1]","EERed",1,"EIRed",1)
+declare("ZipOFFT",-1) // zip stays on full sim -- -1==never zip off
+
+//* "modulation"-related params -- just modulates external input weights to ModType
+// applies modulation at t = modulationT ms.
+// ModGain is scaling factor for AM2,NM2 synapses
+declare("ModONT",0,"fid","o[1]","ModGain",1,"ModType",E2) // when to apply modulation to ModType
+declare("ModOFFT",-1) // modulation stays on full sim -- -1==never modulate off
+
+//* Training-signal related params
+declare("TrainISI",0,"TrainNUM",0,"TrainTY",E4,"TrainW",0,"TrainDUR",1,"TrainPRCT",100,"TrainSY",AM2)
+
+//* ModulateON -- applies ModGain to AM2,NM2 inputs to ModType cells (NetCon weights)
+proc ModulateON () { local i localobj nc,ncl
+  print "Modulation of " , ModGain, " to " , CTYP.o(ModType).s, " ON at t = ", t
+  for i=0,numcols-1 { ncl = col[i].cstim.ncl
+    for ltr(nc,ncl) if(!isojt(nc.pre,INTF6[0]) && isojt(nc.syn,INTF6[0])) {
+      if(nc.syn.type==ModType) {
+        if(nc.weight(AM2)>0) nc.weight(AM2) = wmatex[ModType][AM2] * ModGain
+        if(nc.weight(NM2)>0) nc.weight(NM2) = wmatex[ModType][NM2] * ModGain
+      }
+    }
+  }
+}
+
+//* ModulateOFF -- applies E2ModGain to AM2,NM2 inputs to E2 cells (NetCon weights)
+proc ModulateOFF () { local i localobj nc,ncl
+  print "Modulation of " , ModGain, " to " , CTYP.o(ModType).s, " OFF at t = ", t
+  for i=0,numcols-1 { ncl = col[i].cstim.ncl
+    for ltr(nc,ncl) if(!isojt(nc.pre,INTF6[0]) && isojt(nc.syn,INTF6[0])) {
+      if(nc.syn.type==ModType) {
+        if(nc.weight(AM2)>0) nc.weight(AM2) = wmatex[ModType][AM2]
+        if(nc.weight(NM2)>0) nc.weight(NM2) = wmatex[ModType][NM2]
+      }
+    }
+  }
+}
+
+//* InitModulation
+proc InitModulation () {
+  if(ModGain!=1) {
+    cvode.event(ModONT,"ModulateON()")
+    if(ModOFFT > 0)  cvode.event(ModOFFT,"ModulateOFF()")
+  }
+}
+
+//* ZipON - turn on zip - reduce internal AM2,NM2 weights
+proc ZipON () { local i,j,k,c
+  for c=0,numcols-1 for col[c].ctt(&i) if(!ice(i)) {
+    for col[c].ctt(&j) if(col[c].div[i][j]) {
+      if(ice(j)) {
+        for case(&k,AM2,NM2) col[c].wd0[i][j][k] /= EIRed
+      } else {
+        for case(&k,AM2,NM2) col[c].wd0[i][j][k] /= EERed
+      }
+    }
+  }
+}
+//* ZipOFF - turn off zip - resets internal weights back up
+proc ZipOFF () { local i,j,k,c
+  for c=0,numcols-1 for col[c].ctt(&i) if(!ice(i)) {
+    for col[c].ctt(&j) if(col[c].div[i][j]) {
+      if(ice(j)) {
+        for case(&k,AM2,NM2) col[c].wd0[i][j][k] *= EIRed
+      } else {
+        for case(&k,AM2,NM2) col[c].wd0[i][j][k] *= EERed
+      }
+    }
+  }
+}
+
+//* InitZip
+proc InitZip () {
+  if(EERed!=1 || EIRed!=1) {
+    cvode.event(ZipONT,"ZipON()")
+    if(ZipOFFT > 0)  cvode.event(ZipOFFT,"ZipOFF()")
+  }
+}
+// stccol -->
+
+//* setwmatex - set weights of external inputs to INTF6s
+proc setwmatex () {  local ct,sy
+  if(dosetexvals) {
+    for ct=0,CTYPi-1 for sy=0,STYPi-1 wmatex[ct][sy]=0
+    for ct=0,CTYPi-1 {
+      if(ice(ct)) {
+        ratex[ct][AM2]=sgrhzEI
+        ratex[ct][GA2]=ratex[ct][GA]=sgrhzII
+      } else {
+        if (ct==E2) {
+          ratex[ct][AM2]=sgrhzEE * sgrhzEE_E2sc
+        } else if (ct==E5B) {
+          ratex[ct][AM2]=sgrhzEE * sgrhzEE_E5Bsc
+        } else if (ct==E5R) {
+          ratex[ct][AM2]=sgrhzEE * sgrhzEE_E5Rsc
+        } else if (ct==E6) {
+          ratex[ct][AM2]=sgrhzEE * sgrhzEE_E6sc
+        } else {
+          ratex[ct][AM2]=sgrhzEE
+        }
+        ratex[ct][GA2]=ratex[ct][GA]=sgrhzIE
+      } 
+      ratex[ct][NM2]=sgrhzNM
+      if(IsLTS(ct)) {
+        wmatex[ct][AM2] = 0.2
+        wmatex[ct][NM2] = 0.025
+        wmatex[ct][GA]=wmatex[ct][GA2]=0.125
+      } else if(ice(ct)) {
+        wmatex[ct][AM2] = 0.275 
+        wmatex[ct][NM2] = 0.100   
+        wmatex[ct][GA]=wmatex[ct][GA2]=0.125
+      } else if(ct==E5R) {
+        wmatex[ct][AM2] = 0.25 * 1.05 // 0.25 * 0.001
+        wmatex[ct][NM2] = 0.05 * 1.0
+        wmatex[ct][GA]=wmatex[ct][GA2]=0.125
+      } else if(ct==E5B || ct==E6) {
+        wmatex[ct][AM2] = 0.25 * 1.05
+        wmatex[ct][NM2] = 0.05 * 1.0
+        wmatex[ct][GA]=wmatex[ct][GA2]=0.125
+      } else {
+        wmatex[ct][AM2] = 0.25 
+        wmatex[ct][NM2] = 0.05   
+        wmatex[ct][GA]=wmatex[ct][GA2]=0.125
+      }
+      for sy=0,STYPi-1 wmatex[ct][sy] *= EXGain // apply gain control
+    }    
+    {wmatex[E2][AM2] *= E2WEXGain  wmatex[E2][NM2] *= E2WEXGain}
+    {ratex[E2][AM2] *=E2REXGain  ratex[E2][NM2] *=E2REXGain}
+    for case(&ct,TC, IRE) for sy=0,STYPi-1 {
+      wmatex[ct][sy] *= TCWEXGain
+      ratex[ct][sy]  *= TCREXGain
+    }
+    for case(&ct,SM) for sy=0,STYPi-1 wmatex[ct][sy]=ratex[ct][sy]=0
+  }
+  nqwmex.clear()
+
+  for ct=0,CTYPi-1 for sy=0,STYPi-1 if(wmatex[ct][sy]) nqwmex.append(ct,sy,wmatex[ct][sy]*extinputweightmod,ratex[ct][sy]*extinputratemod) // Save data and multiply by the modulations
+  for ct=0,CTYPi-1 for sy=0,STYPi-1 if(wmatex[ct][sy]) nqwmex.append(ct,sy,wmatex[ct][sy]*extinputweightmod,ratex[ct][sy]*extinputratemod) // Save data and multiply by the modulations
+}
+
+// <-- stccol
+//* SMparams - setup SM cells
+proc SMparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,SM) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)
+      
+      xo.ahpwt=1
+      xo.tauahp=400
+      xo.RMP= -65
+      xo.VTH= -40 
+      xo.refrac= 0.1
+      xo.Vblock= 50
+      
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 0.1*taurefracmod
+      xo.RRWght = .25*amprefracmod
+    }
+  }
+}
+
+//* IREparams - setup IRE cells
+proc IREparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,IRE) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)
+      
+      xo.ahpwt=1
+      xo.tauahp=400
+      xo.RMP= -65
+      xo.VTH= -40 
+      xo.refrac= 1
+      xo.Vblock= 50
+      
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 0.1*taurefracmod
+      xo.RRWght = .25*amprefracmod
+    }
+  }
+}
+
+//* TCparams - setup TC cells
+proc TCparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,TC) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)
+      
+      xo.ahpwt=1
+      xo.tauahp=400
+      xo.RMP= -65
+      xo.VTH= -40 
+      xo.refrac= 1
+      xo.Vblock= 50
+      
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 0.1*taurefracmod
+      xo.RRWght = .25*amprefracmod
+    }
+  }
+}
+// stccol -->
+
+//* RSparams - setup regular spiking excitatory cells
+proc RSparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,E2,E4,E6) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)
+      
+      xo.ahpwt=1
+      xo.tauahp=400
+      xo.RMP= -65
+      xo.VTH= -40 
+      xo.refrac=  5
+      xo.Vblock= -25
+      
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 8*taurefracmod
+      xo.RRWght = .75*amprefracmod
+    }
+  }
+}
+
+//* PTparams - setup params for PT (E5B) cells - accelerating cells
+proc PTparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,E5B) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)
+ 
+      xo.ahpwt=1    
+      xo.tauahp=10    // different from RS
+      xo.RMP= -65
+      xo.VTH= -37.5   // different from RS
+      xo.refrac=  5
+      xo.Vblock= -25
+      
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 8*taurefracmod
+      xo.RRWght = 0.25 // different from RS 
+
+    }
+  }
+}
+
+//* ITparams - setup params for IT (E5R) cells - decelerating cells
+proc ITparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,E5R) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)
+      
+      xo.ahpwt=1
+      xo.tauahp=400
+      xo.RMP= -65
+      xo.VTH= -40 
+      xo.refrac=  5
+      xo.Vblock= -25
+      
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 8*taurefracmod
+      xo.RRWght = .75*amprefracmod
+    }
+  }
+}
+
+//* LTSparams - setup low-threshold spiking interneurons
+proc LTSparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,I2L,I4L,I5L,I6L) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)  
+      xo.ahpwt=0.5
+//      xo.refrac=10 // @@@ CK: was 5, changed back to 10 on 21/03/11
+      xo.refrac=2.5
+      xo.tauahp=50
+      xo.Vblock=100 // -10    
+      xo.RMP = -65
+      xo.VTH= -47
+
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 1.5*taurefracmod
+      xo.RRWght = 0.25*amprefracmod
+    }
+  }
+}
+
+//* FSparams - setup fast spiking interneurons
+proc FSparams () { local ii,jj localobj xo,co
+  for ltr(co,lcol) for case(&ii,I2,I2C,I4,I5,I6,I6C) if(co.numc[ii]>0) {
+    for jj=co.ix[ii],co.ixe[ii] { xo=co.ce.o(jj)    
+      xo.ahpwt=0.5
+//      xo.refrac=10 // @@@ CK: was 5, changed back to 10 on 21/03/11
+      xo.refrac=2.5
+      xo.tauahp=50
+      xo.Vblock=100 // -10    
+      xo.RMP = -63
+      xo.VTH= -40
+
+      xo.tauGA  = 10
+      xo.tauGA2 = 20
+      xo.tauAM2 = 20
+      xo.tauNM2 = 300
+      
+      xo.tauRR = 1.5*taurefracmod
+      xo.RRWght = 0.25*amprefracmod
+    }
+  }
+}
+
+//* setNMParams(col,celltype,mg0 factor,maxnmc) 
+proc setNMParams () { local ct,mgf,maxnmc,idx localobj col,ce
+  col=$o1 ce=col.ce ct=$2 mgf=$3 maxnmc=$4
+  for idx=col.ix[ct],col.ixe[ct] {
+    ce.o(idx).mg0 = 3.57 * mgf
+    ce.o(idx).maxnmc = maxnmc
+  }
+}
+
+//* setNMIParams(col[,mg0 factor,maxnmc])
+proc setNMI () { local mgf,maxnmc,ct localobj col
+  col=$o1
+  if(numarg()>1) mgf=$2 else mgf=1 
+  if(numarg()>2) maxnmc=$3 else maxnmc=1
+  for ct=0,CTYPi-1 if(ice(ct)) setNMParams(col,ct,mgf,maxnmc)
+}
+
+//* schizon - turn on schizo params
+proc schizon () { local c,ct
+  for c=0,numcols-1 {
+    setNMI(col[c],0.75,0.75)
+    setNMParams(col[c],E4,1.25,1.25)
+    for case(&ct,E2,E5R,E5B) setNMParams(col[c],ct,0.75,0.9)
+  }
+}
+//* schizon - turn off schizo params
+proc schizoff () { local c,ct
+  for c=0,numcols-1 {
+    setNMI(col[c],1,1)
+    setNMParams(col[c],E4,1,1)
+    for case(&ct,E2,E5R,E5B) setNMParams(col[c],ct,1,1)
+  }
+}
+
+//* setcstim - set external inputs to COLUMNs using CSTIM
+// REALDATA
+// load_file("realinput.hoc") // Load procedures for using real data
+// proc setrealstim () { local i,seed
+// END-REALDATA
+proc setcstim () { local i,seed
+  for i=0,lcol.count-1 {
+    if(dbgcols)seed=inputseed else seed=(i+1)*inputseed
+    lcstim.append(new CSTIM(lcol.o(i),seed,sgrdur,sgrhzdel,EIBalance[i],usens))
+    lcstim.o(lcstim.count-1).setwm(nqwmex)
+    lcstim.o(lcstim.count-1).setspks()
+  }
+}
+
+//* clrshock -- clear all shock params and actual shocks
+proc clrshock () { local i,j,k,l
+  for i=0,numcols-1 for j=0,CTYPi-1 for k=0,STYPi-1 for l=0,MAXSHOCK-1 {
+    wshock[i][j][k][l]=durshock[i][j][k][l]=prctshock[i][j][k][l]=nshock[i][j][k][l]=isishock[i][j][k][l]=startshock[i][j][k][l]=0
+  }
+  setshock(1)
+}
+
+// <-- stccol
+//* setshockparms -- setup matrices for shock params used by setshock
+proc setshockparms () { local i,x,tm
+  for i=0,1 {
+    wshock[0][E4][AM2][i] = wshock[0][E4][NM2][i] = 15.25
+    durshock[0][E4][AM2][i] = 1
+    prctshock[0][E4][AM2][i] = 100
+    if(i==0) {
+      startshock[0][E4][AM2][i] = 100e3
+      isishock[0][E4][AM2][i] = 100
+      nshock[0][E4][AM2][i] = 50
+    } else {
+      startshock[0][E4][AM2][i] = 200e3
+      isishock[0][E4][AM2][i] = 1e3 / 15
+      nshock[0][E4][AM2][i] = 50
+    }
+  }
+}
+
+//* setshockp(celltype,column,synapsetype,weight,starttime,prctcells,nshocks,isi,dur,shocknum)
+proc setshockp () { local i,x,cty,col,syty,wt,tm,prct,ns,isi,dur,shockn
+  cty=$1 col=$2 syty=$3 wt=$4 tm=$5 prct=$6 ns=$7 isi=$8 dur=$9 shockn=$10
+  wshock[col][cty][syty][shockn] = wt
+  durshock[col][cty][syty][shockn] = dur
+  prctshock[col][cty][syty][shockn] = prct
+  nshock[col][cty][syty][shockn] = ns
+  isishock[col][cty][syty][shockn] = isi
+  startshock[col][cty][syty][shockn] = tm
+}
+// stccol -->
+
+//* setshock([clear vq first]) - set stims using shock matrices , NB: DEFAULT IS TO CLEAR vq FIRST
+proc setshock () { local clr,i,j,k,l,tt,set,ns
+  if(numarg()>0) clr=$1 else clr=1
+  for i=0,numcols-1 for ns=0,1 {
+    set=0 // whether setting new spikes
+    if(clr) {col[i].cstim.vq.clear() col[i].ce.o(0).clrvspks()} // clear shocks to this column?
+    for j=0,CTYPi-1 for k=0,STYPi-1 if(wshock[i][j][k][ns]>0 && nshock[i][j][k][ns]>0) {
+      set = 1
+      tt = startshock[i][j][k][ns] // time
+      for l=0,nshock[i][j][k][ns]-1 {
+        col[i].cstim.shock(durshock[i][j][k][ns],prctshock[i][j][k][ns],j,tt,9342*(i+1)*(j+1)*(k+1)*(l+1),k,wshock[i][j][k][ns]) 
+        tt += isishock[i][j][k][ns] // inc by ISI
+      }
+    }
+    if(set) {
+      col[i].cstim.pushspks()
+      print col[i].cstim.vq.size(-1)
+    }
+  }
+}
+
+// <-- stccol
+//* setplast
+sprint(tstr,"d[%d][%d]",CTYPi,CTYPi)
+declare("dplastinc",tstr,"dplasttau",tstr,"dplastmaxw",tstr) // params for plasticity
+proc setplast () { local i,j,ty2,a localobj xo,vwg,vtau,vinc,vmaxw,vidx
+  a=allocvecs(vwg,vtau,vinc,vmaxw,vidx)
+  for i=0,CTYPi-1 if(col.numc[i] && !ice(i)) for j=0,CTYPi-1 {
+    if(ice(j)) {
+      dplastinc[i][j] = 0.1
+      dplasttau[i][j] = 10
+      dplastmaxw[i][j] = EIRed * maxplastscalefactor
+    } else {
+      dplastinc[i][j] = 1
+      dplasttau[i][j] = 10
+      dplastmaxw[i][j] = EERed * maxplastscalefactor
+    }
+  }
+  plaststartT_INTF6 = tstop*0.0 // CK: have plasticity on always
+  plastendT_INTF6   = tstop*1.0
+  maxplastt_INTF6 = 40 * 1 // max time interval over which to consider plasticiy; was 10 originally I think, but tau is also 10, so 40 is better
+  for ltr(xo,col.ce) {
+    xo.getdvi(vidx)
+    vrsz(vidx.size,vwg,vtau,vinc,vmaxw)
+    vwg.fill(1)
+    for i=0,vidx.size-1 {
+      ty2 = col.ce.o(vidx.x(i)).type
+      vtau.x(i) = dplasttau[xo.type][ty2]
+      vinc.x(i) = dplastinc[xo.type][ty2]
+      vmaxw.x(i) = dplastmaxw[xo.type][ty2]
+    }
+    if(0) print ice(xo.type),vtau.min,vtau.max,vinc.min,vinc.max,vmaxw.min,vmaxw.max
+    xo.setplast(vwg,vtau,vinc,vmaxw)
+  }  
+  dealloc(a)
+}
+
+//* getplastnq(col) - make an NQS with plasticity info, so can load later
+obfunc getplastnq () { local i,a localobj nq,col,xo,vwg,vtau,vinc,vmaxw
+  a=allocvecs(vwg,vtau,vinc,vmaxw,vidx) col=$o1
+  nq=new NQS("id","gid","vwg","vtau","vinc","vmaxw")
+  {nq.odec("vwg") nq.odec("vtau") nq.odec("vinc") nq.odec("vmaxw")}
+  for ltr(xo,col.ce) {
+    vrsz(xo.getdvi,vwg,vtau,vinc,vmaxw)
+    xo.getplast(vwg,vtau,vinc,vmaxw)
+    nq.append(xo.id,xo.gid,vwg,vtau,vinc,vmaxw)
+  }
+  dealloc(a)
+  return nq
+}
+
+//* setplastnq(nq,col) - load plasticity weights,info into col INTF6 cells
+// should set resetplast_INTF6 to 0 if using this function
+func setplastnq () { localobj nq,col,xo,vwg,vtau,vinc,vmaxw
+  nq=$o1 col=$o2
+  for ltr(xo,col.ce) {
+    if(nq.select(-1,"gid",xo.gid)!=1) {
+      print "can't find gid " , xo.gid , " in nqs!"
+      return 0
+    }
+    vwg=nq.get("vwg",nq.ind.x(0)).o
+    vtau=nq.get("vtau",nq.ind.x(0)).o
+    vinc=nq.get("vinc",nq.ind.x(0)).o
+    vmaxw=nq.get("vmaxw",nq.ind.x(0)).o
+    if((i=xo.getdvi)!=vwg.size) {
+      print "wrong size ", i, " != " , vwg.size
+      return 0
+    }
+    xo.setplast(vwg,vtau,vinc,vmaxw)
+  }
+  return 1
+}
+//* plastoff
+proc plastoff () { local i,j,ty2,a localobj xo,vwg,vtau,vinc,vmaxw,vidx
+  a=allocvecs(vwg,vtau,vinc,vmaxw,vidx)
+  for ltr(xo,col.ce) {
+    xo.getdvi(vidx)
+    vrsz(vidx.size,vwg,vtau,vinc,vmaxw)
+    vwg.fill(1)
+    for i=0,vidx.size-1 {
+      ty2 = col.ce.o(vidx.x(i)).type
+      vtau.x(i) = dplasttau[xo.type][ty2]
+      vinc.x(i) = 0 
+      vmaxw.x(i) = dplastmaxw[xo.type][ty2]
+    }
+    xo.setplast(vwg,vtau,vinc,vmaxw)
+  }  
+  dealloc(a) 
+}
+
+//* lowrefrac - lower refractory period
+proc lowrefrac () { local i localobj xo
+  // lower refrac to allow more flexible freq. alterations
+  for i=0,numcols-1 for ltr(xo,col[i].ce) {
+    if(ice(xo.type)) {
+      xo.refrac=MINxy(2.5,xo.refrac)
+    } else xo.refrac=MINxy(5,xo.refrac)
+  }
+}
+
+//* trainsig(isi,signal number,weight,ty,dur,prct[,clear]) - setup training signal
+proc trainsig () { local i,nsumshocks,isi,clr,w,ty,dur,prct,sy
+  if(numarg()>7) clr=$8 else clr=0
+  if(clr) clrshock()
+  isi=$1
+  numshocks = (plastendT_INTF6 - plaststartT_INTF6) / isi
+  w=$3 ty=$4 dur=$5 prct=$6 sy=$7
+  for i=0,numcols-1 setshockp(ty,i,sy,w,plaststartT_INTF6,prct,numshocks,isi,dur,$2)
+  setshock(0)
+}
+
+//* mkSMG - drop the SM cells on a 2D grid based on their locations
+proc mkSMG () { local i,j,x,y,xx,yy localobj c
+  for yy=0,SMH-1 for xx=0,SMW-1 if(SMG[yy][xx]!=nil) SMG[yy][xx].resize(0)
+  for i=col.ix[SM],col.ixe[SM] {
+    c=col.ce.o(i)
+    if(checkers) {
+      x=int(c.xloc) y=int(c.yloc) // no rounding for checkers
+    } else {
+      x=int(c.xloc+0.5) y=int(c.yloc+0.5)
+    }
+    for yy=MAXxy(0,y-SMDIV),MINxy(y+SMDIV,SMH-1) for xx=MAXxy(0,x-SMDIV),MINxy(x+SMDIV,SMW-1) {
+      if(SMG[yy][xx]==nil) SMG[yy][xx]=new Vector()
+      SMG[yy][xx].append(i)
+    }
+  }
+}
+
+//* mkSMstim - make sensory stims that are sent to SM cells - based on nqpath
+proc mkSMstim () { local i,j,k,x,y,cdx,tt,a localobj vec,vt,vq,vx,vy,rdm
+  {a=allocvecs(vec) vq=col.cstim.vq rdm=new Random() rdm.ACG(SMSEED)} 
+  vq.clear(col.numc[SM]*tstop)
+  {vt=nqpath.v[0] vx=nqpath.v[1] vy=nqpath.v[2]}
+  for i=0,nqpath.v.size-1 {
+    x=vx.x(i) y=vy.x(i) tt=vt.x(i)
+    if(SMG[y][x]!=nil) {
+      rdm.uniform(tt,tt+SMDUR)
+      vec.resize(SMG[y][x].size*SMNUM)
+      vec.setrand(rdm)
+      vq.v[1].append(vec)
+      for k=0,SMNUM-1 vq.v.append(SMG[y][x])
+    }
+  }
+  for i=2,3 vq.v[i].resize(vq.v.size)
+  {vq.v[2].fill(SMWGHT) vq.v[3].fill(AM2)}
+  col.cstim.pushspks()
+  dealloc(a)
+}
+
+//* mknqpath(maxx,maxy,timeinc,timeend[,sd,randomseed]) - make an nqs with path info
+obfunc mknqpath () { local maxx,maxy,tt,tinc,x,y,incx,incy,tend,dir,s,sd,twopi\
+                    localobj rdm,nqp
+  {rdm=new Random() maxx=$1 maxy=$2 tt=0 tinc=$3 x=maxx/2 y=maxy/2 tend=$4}
+  if(numarg()>5) s=$6 else s=1234
+  if(numarg()>4) sd=$5 else sd=PI/32
+  {rdm.ACG(s) nqp=new NQS("t","x","y","dir")}
+  {twopi=2*PI dir=rdm.uniform(0,twopi)} // direction 0-360 degrees
+  for(tt=SMSTART;tt<=tend;tt+=tinc) {
+
+    nqp.append(tt,x,y,dir)
+
+    dir += rdm.normal(0,sd) // biased towards straight lines with some variation
+    dir = dir%twopi // keep it btwn 0,2*PI
+
+    incx = 20*tinc*cos(dir)/1e3 // increment in x,y
+    incy = 20*tinc*sin(dir)/1e3
+
+    x = MINxy( MAXxy(0,x+incx), maxx ) // make sure positions in bounds
+    y = MINxy( MAXxy(0,y+incy), maxy )
+
+    if(x+incx>maxx) { // reflection rules
+      if(dir>=0 && dir<=PI/2) dir += PI/2 else dir -= PI/2
+      dir = dir % twopi
+      continue
+    } else if(x+incx<0) {
+      if(dir>=PI/2 && dir<=PI) dir -= PI/2 else dir += PI/2
+      dir = dir % twopi
+      continue
+    }
+    if(y+incy>maxy) {
+      if(dir>=0 && dir<=PI/2) dir -= PI/2 else dir += PI/2
+      dir = dir % twopi
+    } else if(y+incy<0) {
+      if(dir>=3*PI/2) dir+=PI/2 else dir-=PI/2
+      dir = dir % twopi
+    }
+  }
+  return nqp
+}
+
+//* mkregpath(maxx,maxy,timeinc,timeend) - make an nqs with path info - no randomness, regular traversal
+obfunc mkregpath () { local maxx,maxy,tt,tinc,x,y,tend,dir,s localobj nqp
+  {maxx=$1 maxy=$2 tt=0 tinc=$3 x=y=0 tend=$4 nqp=new NQS("t","x","y","dir")}
+  dir=0 // direction 0-360 degrees
+  for(tt=SMSTART;tt<=tend;tt+=tinc) {
+    nqp.append(tt,x,y,dir)
+    if(dir==0) x+=1 else x-=1
+    if(x >= maxx) {
+      x=maxx-1
+      dir=-1
+      y+=1
+      if(y>=maxy) y=0
+    } else if(x < 0) {
+      x=0
+      dir=0
+      y+=1
+      if(y>=maxy) y=0
+    }
+  }
+  return nqp
+}
+
+//* set skin path
+proc setpath () {
+  nqsdel(nqpath)
+  if(regpath) {
+    nqpath=mkregpath(pathdim,pathdim,pathtinc,tstop)
+  } else nqpath=mknqpath(pathdim,pathdim,pathtinc,tstop,pathsd,pathseed)
+}
+
+//* sethandlers - setup events, if needed
+proc sethandlers () {
+  // sets up modulation events to ModType, only matters if ModGain != 1 (supposed to be < 1 for damage)
+  // fid = new FInitializeHandler(1,"InitModulation()") 
+  // sets up Zip, if applicable (only iff EERed !=1 or EIRed != 1)
+  zid = new FInitializeHandler(1,"InitZip()") 
+}
+// stccol -->
+
+//* pickcellsbytype - return a vector of cell indices based on cell type
+obfunc pickcellsbytype () { local ii localobj ctlist,clist
+  // Read in the cell types (Vector) list.
+  ctlist = $o1
+
+  // Create a new vector for the cell index (Vector) list.
+  clist = new Vector()
+  
+  // For every cell in the first column...
+  for ii=0,col[0].ce.count()-1 {
+    // If the type of the cell is in the list of types to get, add the cell.
+    if (ctlist.contains(col[0].ce.o(ii).type)) {
+      clist.append(ii)
+    }
+  }
+
+  return clist
+}
+
+//* pickcellsbyzrange - return a vector of cell indices based on z location range
+//    (but also including only cell types in the filter list)
+obfunc pickcellsbyzrange () { local ii localobj ctfiltlist,clist
+  zmin = $1         // minimum z location
+  zmax = $2         // maximum z location
+  if (numarg()>2) {
+    ctfiltlist = $o3  // cell types filter (Vector) list
+  }
+
+  // Create a new vector for the cell index (Vector) list.
+  clist = new Vector()
+  
+  // For every cell in the first column...
+  for ii=0,col[0].ce.count()-1 {
+    // If no cell type filter is specified...
+    if (ctfiltlist == nil) {
+      // If the cell z location is in the desired range, add the cell.
+      if ((col[0].ce.o(ii).zloc >= zmin) && (col[0].ce.o(ii).zloc < zmax)) {
+        clist.append(ii)
+      }
+    // Else (a cell filter type is specified)...
+    } else {
+      // If the cell z location is in the desired range, and the type of the cell is in the list 
+      // of types to get, add the cell.
+      if ((col[0].ce.o(ii).zloc >= zmin) && (col[0].ce.o(ii).zloc < zmax) && (ctfiltlist.contains(col[0].ce.o(ii).type))) {
+        clist.append(ii)
+      }
+    }
+  }
+
+  return clist
+}
+
+//* setcellgroupshock - set a shock for a Vector-specified group of cells
+proc setcellgroupshock () { local ii,cellprct,pickthiscell localobj clist,randcond,xo
+  // Load shock parameters.
+  clist = $o1     // Vector list of cells to shock
+  shocktime = $2  // shock time (in ms)
+  if (numarg() > 2) cellprct = $3 else cellprct = 100  // shock % cells stimulated
+  if (numarg() > 3) shockwt = $4 else shockwt = 30     // shock NetCon weight
+
+  // Set up a random uniform distribution generator.
+  randcond = new Random(inputseed)
+  randcond.uniform(0,1)
+
+  // Create shock NetStim for all of the cells.
+  grpshockNetStim = new NetStim(0.5)
+  grpshockNetStim.number = 1
+  grpshockNetStim.start = shocktime
+  grpshockNetStim.noise = 0
+  grpshockNetStim.interval = 0
+
+  // Create a List for the NetCons this NetStim will feed into.
+  grpshockncl = new List()
+
+  // For every cell in the first column...
+  for ii=0,clist.size()-1 {
+    // Roll a number between 0 and 100 for whether to pick the cell.
+    pickthiscell = 100*randcond.repick()
+
+    // If the cell is picked make a new NetCon sending the NetStim output to the cell.
+    if (cellprct > pickthiscell) {
+      xo = new NetCon(grpshockNetStim,col[0].ce.o(clist.x(ii)))
+      xo.delay = 0
+      xo.weight(AM2) = shockwt
+      grpshockncl.append(xo)
+    }
+  }
+}
+
+//* setcellgrouprndstims - set a random stims for a Vector-specified group of cells
+proc setcellgrouprndstims () { local ii localobj clist,xo
+  // Load random stimulus parameters.
+  clist = $o1     // Vector list of cells to stimulate
+
+}
+
+//* function calls
+
+// Set up an object variables for cells indices.
+objref cinds   // ce indices
+objref ctinds  // cell type indices
+ctinds = new Vector()
+ctinds.append(E2,I2,I2L,E5B,E5R,I5,I5L,E6,I6,I6L)
+
+setwmatex() // sets params for poisson inputs
+
+{SMparams() IREparams() TCparams() RSparams() PTparams() ITparams() LTSparams() FSparams()} // cell params
+
+//lowrefrac() // lower refrac than frontiers version
+
+if (!jcn) rjinet() //means no jitcon
+
+if(disinhib) inhiboff()
+
+// <-- stccol
+setpath() // set path along skin (sensory input)
+
+setcstim() // creates poisson inputs
+
+// Set up a shock in particular cells.
+//ctinds.resize(0)
+//ctinds.append(I2,I2L)
+if (grpshocktyp == 1) {
+  cinds = pickcellsbyzrange(143.0,451.8,ctinds) // pick cells in a given z range (Layer 2/3)
+} else if (grpshocktyp == 2) {
+  cinds = pickcellsbyzrange(451.8,663.6,ctinds) // pick cells in a given z range (Layer 5A)
+} else if (grpshocktyp == 3) {
+  cinds = pickcellsbyzrange(663.6,1059.0,ctinds) // pick cells in a given z range (Layer 5B)
+} else if (grpshocktyp == 4) {
+  cinds = pickcellsbyzrange(1059.0,1412.0,ctinds) // pick cells in a given z range (Layer 6)
+}
+if (grpshocktyp > 0) setcellgroupshock(cinds,1e3,grpshockpct)  // Set the shock at 1 s.
+
+if(seadsetting_INTF6==3) setplast() // setup plasticity params
+
+if(TrainW>0 && TrainISI>0) {
+  trainsig(TrainISI,0,TrainW,TrainTY,TrainDUR,TrainPRCT,TrainSY) // 8 Hz training signal during plasticity period
+}
+
+if(useSM) { // whether to turn on sensory inputs
+  mkSMG() // setup 2D grid for SM cell IDs
+  mkSMstim() // setup sensory stim (uses nqpath)
+}
+
+// sethandlers()
+// stccol -->

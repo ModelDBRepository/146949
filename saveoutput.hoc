@@ -1,0 +1,185 @@
+// SAVEOUTPUT
+// This program saves the output of an intfcol-derived simulation.
+// Version: georgec 10/4/12
+
+print "Loading saveoutput.hoc..."
+
+// What to save -- 1=save, 0=don't save; default is save all
+savelfp=1
+savespikes=1
+savelocations=1
+saveconnectivity=1
+savenqss=1
+savedynamicweights=0
+savegrvec=0
+
+// Create string objects
+strdef outfn1, outfn2, outfn3, outfn4, outfn1b, outfn2b, outfn3b, outfn4b, outfn5
+sprint(outfn1,"%s-lfp.txt",filestem) // Initialize output LFP filename
+sprint(outfn2,"%s-spk.txt",filestem) // Initialize output spikes filename
+sprint(outfn3,"%s-loc.txt",filestem) // Store the cell locations
+sprint(outfn4,"%s-con.txt",filestem) // Store the connectivity information
+sprint(outfn1b,"%s-lfp.nqs",filestem) // Initialize output LFP filename (NQS version)
+sprint(outfn2b,"%s-spk.nqs",filestem) // Initialize output spikes filename (NQS version)
+sprint(outfn3b,"%s-loc.nqs",filestem) // Store the cell locations (NQS version)
+sprint(outfn4b,"%s-con.nqs",filestem) // Store the connectivity information (NQS version)
+sprint(outfn5,"%s-prlist.gvc",filestem) // Store the grvec information
+
+// Declare objects -- can't be done inside if statements stupidly
+{objref fobj, tempvec, tempstr, storelfp} // For LFPs
+{objref fobj2, storespikes, tmpt, tmpid, tmptype, tmpcol} // For spikes
+{objref fobj3, celllist, celllocations} // For locations
+{objref fobj4, conpreid, conpostid, condelay, condistance, conweight1, conweight2, connectivity} // For connectivity
+
+if (savelfp) {
+	// For saving LFP results
+	print "Saving LFP..."
+	oldhz=nqLFP.cob.v.size/tstop*1000 // Original sampling rate; *1000 because tstop is in ms
+	newhz=200 // The new frequency to sample at, in Hz
+	ratio=oldhz/newhz // Calculate the ratio betwen the old and new sampling rates
+	npts=tstop/1000*newhz // Number of points in the resampled time seris
+	nlayers=nqLFP.m // Number of layers (usually 5 -- 2/3, 4, 5, 6, all)
+	storelfp = new Matrix(npts, nlayers*numcols+1) // Combine layers/columns into one dimension, and make first column time
+	for k=0,npts-1 storelfp.x[k][0]=k/newhz*1000 // Save time data
+	count=1 // Set column of storelfp to one (zero is time)
+	for i=0,numcols-1 { // Loop over all columns
+	  for j=0,nlayers-1 { // Loop over all layers
+		tempstr=nqLFP[i].s[j] // Get this particular NQS column header
+		tempvec=nqLFP[i].getcol(tempstr.s) // Save this particular NQS column to a vector
+		for k=0,npts-1 { // Loop over points in the resampled time series
+		  // Calculate this particular data point by downsampling and store
+		  storelfp.x[k][count]=tempvec.mean(k*ratio,(k+1)*ratio-1) 
+		}
+		{fprint("  Column/layer %g of %g...\n",count,nlayers)} // Assume numcols is 1 since dies otherwise
+		count+=1 // Increase column of storelfp
+	  }
+	}
+	// For outputting LFPs to a file
+	print "  Saving to file..."
+	fobj = new File(outfn1)
+	fobj.wopen()
+	storelfp.fprint(0,fobj,"%10.1f") // It's usually in the thousands so one d.p. should do
+	fobj.close()
+	print "  ...done..."
+
+   // Save the NQS file if desired
+   if (savenqss) {
+      // Add a time-stamps column to the NQS table.
+      tempvec.resize(nqLFP.v[0].size)
+      tempvec.indgen(vdt)
+      nqLFP[0].resize("ts",tempvec)
+      nqLFP[0].sv(outfn1b)  // assume 1 column for the time being (0)
+   }
+}
+
+
+if (savespikes) {
+	// For saving spike results
+	print "Saving spikes..."
+	skipsnq=0 // flag to create NQS with spike times, one per column
+	initAllMyNQs() // setup of NQS objects with spike/other information
+	totalnumberofspikes=0 // Calculate the total number of spikes generated across all columns
+	for i=0,numcols-1 totalnumberofspikes+=snq[i].cob.v.size 
+	storespikes = new Matrix(totalnumberofspikes, 3) // Four columns: spike time, cell ID, cell type, and spike time
+	count=-1 // Initialize row count
+	for i=0,numcols-1 { // Loop over columns
+		tmpt=snq[i].getcol("t")
+		tmpid=snq[i].getcol("id")
+		tmptype=snq[i].getcol("type")
+		for j=0,snq[i].cob.v.size-1 { // Loop over spikes
+			if (1) { //(mod(tmpid.x[j],scale)==0) { // Only collect spikes from one out of every "scale" cells
+				count+=1
+				if (mod(count,10000)==0) {fprint("  %3.0f%% complete...\n",count*100/snq[i].cob.v.size)} // Print progress
+				storespikes.x[count][0]=tmpt.x[j] // Store spike times
+				storespikes.x[count][1]=tmpid.x[j] // Store cell number
+				storespikes.x[count][2]=tmptype.x[j] // Store cell type
+			}
+		}
+	}
+	storespikes.resize(count,3) // Get rid of extra zeros
+	// For outputting spikes to a file
+	print "  Saving to file..."
+	fobj2 = new File(outfn2)
+	fobj2.wopen()
+	storespikes.fprint(0,fobj2,"%6.0f") // All quantities are integers, so this should be fine
+	fobj2.close()
+	print "  ...done..."
+
+   // Save the NQS file if desired
+   if (savenqss) {
+      snq[0].sv(outfn2b)  // assume 1 column for the time being (0)
+   }
+}
+
+
+
+if (savelocations) {
+	// For saving cell locations
+	print "Saving cell locations..."
+	// Shorten name of important structure
+
+	celllist=col.ce
+	n=celllist.count() // Number of cells
+	// Initialize array
+	celllocations = new Matrix(n,5) // Number of cells in 3D space
+	for i=0,n-1 { // Loop over each cell
+		celllocations.x[i][0]=i // Cell ID
+		celllocations.x[i][1]=celllist.o[i].type // Cell population
+		celllocations.x[i][2]=celllist.o[i].xloc // X position
+		celllocations.x[i][3]=celllist.o[i].yloc // Y position
+		celllocations.x[i][4]=celllist.o[i].zloc // Z position
+		}
+	// Save results to disk in text format
+	fobj3 = new File(outfn3)
+	fobj3.wopen()
+	celllocations.fprint(0,fobj3,"%10.1f") // It's usually in the thousands so one d.p. should do
+	fobj3.close()
+
+   // Save the NQS file if desired
+   if (savenqss) {
+      col[0].cellsnq.sv(outfn3b)  // assume 1 column for the time being (0)
+   }
+}
+
+
+
+if (saveconnectivity) {
+	// For saving cell connectivity
+	print "Saving cell connectivity..."
+	conpreid=col.connsnq.getcol("id1")
+	conpostid=col.connsnq.getcol("id2")
+	condelay=col.connsnq.getcol("del")
+	condistance=col.connsnq.getcol("dist")
+	conweight1=col.connsnq.getcol("wt1")
+	conweight2=col.connsnq.getcol("wt2")
+	// Initialize array
+	n = conpreid.size()
+	connectivity = new Matrix(n,5) // PreID, post ID, delay, distance, and the first weight
+	for i=0,n-1 { // Loop over each synapse
+		connectivity.x[i][0]=conpreid.x[i]
+		connectivity.x[i][1]=conpostid.x[i]
+		connectivity.x[i][2]=condelay.x[i]
+		connectivity.x[i][3]=condistance.x[i]
+		connectivity.x[i][4]=conweight1.x[i]
+		}
+	// Save results to disk in text format
+	print "  Saving to file..."
+	fobj4 = new File(outfn4)
+	fobj4.wopen()
+	connectivity.fprint(0,fobj4,"%7.1f") // It's usually in the thousands so one d.p. should do
+	fobj4.close()
+	print "  ...done..."
+
+   // Save the NQS file if desired
+   if (savenqss) {
+      col[0].connsnq.sv(outfn4b)  // assume 1 column for the time being (0)
+   }
+}
+
+if (savedynamicweights) {
+	writeweightstodisk()
+}
+
+if (savegrvec) {
+   pvall("grvec data",outfn5)
+}

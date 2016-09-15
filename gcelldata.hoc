@@ -1,0 +1,384 @@
+// gcelldata.hoc -- routines for processing the empirical data used by the 
+//   simulation (gcell = Gordon (Shepherd) cell).
+
+// Globals and routines pertaining to the empirical data used from 
+// (Weiler et al., 2008) and other Gordon Shepherd projects.
+//
+// Last update: 3/12/11 (georgec)
+
+//* Globals
+numgcs = 0           // number of Gordon cells (set later)
+numgcxs = 16         // number of horizontal bins in Gordon cell conv data
+xbinwid = 100        // x bin width (in microns)
+numzs = 16           // number of depth bins
+zbinwid = 100        // z (depth) bin width (in microns)
+lambeg = 0           // the first z bin for a cell layer (set in proc)
+lamend = 0           // the last z bin for a cell layer (set in proc)
+sigub = -15.0        // significant upper bound (in pA) for the data values
+objref wdnq          // (Weiler et al., 2008) data NQS table
+objref hupnq         // hookup NQS table
+objref convnq        // test cell convergence NQS table (made from hupnq)
+strdef gsprepdir     // directory for Gordon Shepherd preprocessed data
+gsprepdir = "."
+GCELLTYPE_NORMAL = 0      // normal Gordon cell type (otherwise unlabeled)
+GCELLTYPE_CXSPINAL = 1    // corticospinal layer 5 cell
+GCELLTYPE_CXSTRIATAL = 2  // contralateral corticostriatal layer 5 cell
+
+//* Routines
+
+//** simdatainit() -- load and/or preprocess Gordon cell data
+proc simdatainit () { local a,ii,tnumgcs localobj v1,v2,v3
+  // Allocate temporary vectors.
+  a = allocvecs(v1,v2,v3)
+
+  // Load the NQS tables for Gordon's data.
+  {sprint(tstr,"%s/gmgs102.nqs",gsprepdir)}
+  rdnqss(tstr)
+
+  // Load the appropriate preprocessed cells data table.
+  wdnq = new NQS()
+//  {sprint(tstr,"%s/wdmaps.nqs",gsprepdir)} // culled cells with no preprocessing
+  {sprint(tstr,"%s/wdmaps2.nqs",gsprepdir)} // culled cells with interpolation applied
+  wdnq.rd(tstr) // culled cells with interpolation applied
+
+  // Set the number of Gordon cells.
+  numgcs = wdnq.m
+
+  // Make a new NQS table for only cells with neg responses over a cuttoff.
+//  wdnq = cullcells(raw, sigub)
+
+  // Create the hookup table.
+  mkhuptable()
+
+  // Scale hookup table weights (clip Gordon cell values between the negatives 
+  // of the first 2 values, then scale these values to the last 2 values.
+  scalehupwts(0,50,0,5)
+//  scalehupwts(0,50,0,5)  // original
+
+  // Add new columns to the cells table for (Gordon) cell number, Gordon 
+  // cell type, and z bin.
+  tnumgcs = cells.size
+  v1.resize(tnumgcs)
+  v2.resize(tnumgcs)
+  v3.resize(tnumgcs)
+  v1.indgen(0,tnumgcs-1,1)
+  v2.fill(GCELLTYPE_NORMAL)  // all cells are normal Gordon cells for now
+  for ii=0,tnumgcs-1 {
+    v3.x(ii) = gcellnum2zbin(ii)
+  }
+  cells.resize("cellnum",v1,"gcelltyp",v2,"zbin",v3)
+
+  // Deallocate the temporary vectors.
+  dealloc(a)
+}
+
+//** gcellnum2zbin(gordon_cell_type) -- translate Gordon cell number to z 
+// (depth) bin
+func gcellnum2zbin () { local a,ii,zbin,ysoma localobj vv1
+  a = allocvecs(vv1)
+ 
+  // Get the micron distance of the cell from the pia.
+  ysoma = cells.v[2].x($1)
+
+  vv1.indgen(zbinwid,zbinwid * numzs,zbinwid)
+  zbin = -1
+  ii = numzs-1
+  while (ii >= 0) {
+    if (ysoma <= vv1.x(ii)) {
+      zbin = ii  
+    }
+    ii -= 1
+  }
+  dealloc(a)
+  return zbin
+}
+
+//** getlambin(model_cell type) - get the first and last laminar bin for cell 
+// type
+proc getlambin () { local lyr
+  lyr=GetLyr($1)
+  if (lyr == 2) {
+    lambeg = 1
+    lamend = 4
+  } else if (lyr == 5) {
+    lambeg = 5
+    lamend = 10
+  } else if (lyr == 6) {
+    lambeg = 11
+    lamend = 13
+  } else {
+    print "ERROR: Cannot find laminar bins for cell type #", $1
+  }
+}
+
+//** cullcells() -- make a new NQS table for cells only above neg. cutoff
+obfunc cullcells () { local a,cutoff,cullcount localobj iq,oq,v1
+  iq = $o1  // input nq (with 102 cells)
+  cutoff = $2   // cutoff value for minimum
+
+  oq = new NQS() // output nq
+  a = allocvecs(v1)  // alloc vector for keeping culled cell ID nums
+
+  // Loop over all column vectors of the NQS table...
+  for ii=0,iq.m-1 {
+    // If the minimum data value is below the cutoff value (e.g. -20 pA)...
+    if (iq.v[ii].min < cutoff) { 
+      oq.resize(iq.s[ii].s,iq.v[ii])
+      v1.append(ii)
+    }
+  }
+
+  // Copy the cull cell ID numbers into the .x vector of the table
+  oq.x.copy(v1)
+
+  // Deallocate vectors.
+  dealloc(a)
+
+  return oq
+}
+
+//** chkgapcontig() -- check for occurences of places in data where 
+//  points were removed because of closeness to soma
+proc chkgapcontig () { local a,ii,jj localobj v1,v2
+  // Allocate vectors
+  a = allocvecs(v1,v2)
+
+  // Loop over all of the cells in the table...
+  for ii=0,wdnq.m-1 {
+//    print "Cell #", ii
+
+    // Loop over the 16 rows of the raw data matrix...
+    for jj=0,15 {
+//      printf("Row #%d: ", jj) 
+      v1.resize(16)
+      v2.resize(16)
+      v1.mrow(wdnq.v[ii],jj,16)  // put the jjth row in v1
+      v2.indvwhere(v1,"==",1e-9) // pull out indices where number = 1e-9
+      if (v2.size > 0) {
+        iscontig = v2.ismono(3)    // set true if indices are consecutive
+        if (iscontig) { 
+//          print "contiguous" 
+        } else { 
+//          print "NONCONTIGUOUS" 
+//          if (v1.min() < -10.0) {
+            printf("Cell #%d, Row #%d: ",ii,jj)
+            vlk(v1) 
+//          }
+        }
+      } else { 
+//        print "no gap"
+      }
+    }
+//    print "------"
+  }
+
+  // Dealloc vectors.
+  dealloc(a)
+}
+
+//** lininterp() -- linear interpolation function, returning a vector
+obfunc lininterp () { local val1,val2,veclen,intstep localobj vint
+  val1 = $1
+  val2 = $2
+  veclen = $3
+
+  vint = new Vector(veclen)
+
+  // Calculate a (positive-valued) even step.
+  intstep = abs(val2 - val1) / (veclen - 1)  
+
+  // If 2nd value higher, do normal indgen.
+  if (val2 > val1) {
+    vint.indgen(val1,val2,intstep)
+  // If 1st value higher, flip value, do indgen, and flip result.
+  } else if (val1 > val2) {
+    vint.indgen(val2,val1,intstep)
+    vint.reverse()
+  // If values equal, just fill with the first value.
+  } else {
+    vint.fill(val1)
+  }
+
+  return vint
+}
+
+//** interpgaps() -- interpolate through the "infinity" gaps in the data
+proc interpgaps () { local a,ii,jj,kk,val,infbin,srb,erb,intstp localobj v1,v2,v3
+
+  // Allocate vectors
+  a = allocvecs(v1,v2,v3)
+
+  // Loop over all of the cells in the table...
+  for ii=0,wdnq.m-1 {
+//    print "Cell #", ii
+
+    // Loop over the 16 rows of the raw data matrix...
+    for jj=0,15 {
+//      printf("Row #%d: ", jj) 
+      v1.resize(16)
+      v2.resize(16)
+      v1.mrow(wdnq.v[ii],jj,16)  // put the jjth row in v1
+      v2.indvwhere(v1,"==",1e-9) // pull out indices where number = 1e-9
+      // Only worry about rows where we have 1e-9...
+      if (v2.size > 0) {
+        srb = -1
+        erb = -1
+        for kk=0,v2.size-1 {
+          // Get the index of the inf (1e-9) bin.
+          infbin = v2.x(kk)
+
+          // Deal with the edge case where bin 0 is 1e-9.
+          // Note: if we had runs of more than 1, we'd need to deal with that.
+          if (infbin == 0) {
+            v1.x(0) = v1.x(1)  // Set to the next bin
+          // Deal with the edge case where bin 15 is 1e-9.
+          // Note: if we had runs of more than 1, we'd need to deal with that.
+          } else if (infbin == 15) {
+            v1.x(15) = v1.x(14)  // Set to the previous bin
+          // If we have not started a run of Infs yet, start a new run
+          } else if (srb == -1) {
+            srb = infbin - 1
+            erb = infbin + 1
+          // If we have started a run and the new bin contig with the run
+          } else if (infbin == erb) {
+            erb += 1
+          // If the next bin is not contiguous with the latest run
+          } else {
+            // Linearly interpolate for the run.
+//            printf("Cell #%d, Row #%d (%d to %d): ",ii,jj,srb,erb)
+//            printf("interp between %f and %f\n",v1.x(srb),v1.x(erb))
+//            vlk(v2)
+            v3 = lininterp(v1.x(srb),v1.x(erb),erb-srb+1)
+            v1.copy(v3,srb)  // copy linear interpolation vector back to row
+//            vlk(v1)
+
+            // Start a new run.
+            srb = infbin - 1
+            erb = infbin + 1
+          }
+
+          // If we're at the end of the list of inf bins, and have started a 
+          // run, output.
+          if ((kk == v2.size-1) && (srb != -1)) {
+            // Linearly interpolate for the run.
+//            printf("Cell #%d, Row #%d (%d to %d): ",ii,jj,srb,erb)
+//            printf("interp between %f and %f\n",v1.x(srb),v1.x(erb))
+//            vlk(v2)
+            v3 = lininterp(v1.x(srb),v1.x(erb),erb-srb+1)
+            v1.copy(v3,srb)  // copy linear interpolation vector back to row
+//            vlk(v1)
+          }
+        }
+
+        // Put row v1 back in the NQS data (saving changes).
+        v1.msetrow(wdnq.v[ii],jj,16)
+      }
+    }
+//    print "------"
+  }
+
+  // Dealloc vectors.
+  dealloc(a)
+}
+
+//** mkhuptable() -- make a hookup NQS table from wdnq.
+proc mkhuptable () { local a,ii,jj,kk,cz localobj vv1
+  // Allocate scratch vectors.
+  a = allocvecs(vv1)
+
+  // Make the NQS table.
+  hupnq = new NQS("srcz","destcell","destxshift","destz","wt")
+
+  // Loop over all of the depth bins...
+  for ii=0,numzs-1 {
+    // Loop over all "Gordon cells"...
+    for jj=0,wdnq.m-1 {
+      // Grab row ii, the row corresponding to the depth bin we're at.
+      vv1.mrow(wdnq.v[jj],ii,numgcxs)   // numgcxs = 16 now
+
+      // Loop over all x bins in the row...
+      for kk=0,vv1.size-1 {
+        // If the value is less than the significant upper bound...
+        if (vv1.x(kk) < sigub) {
+          // Record the entry (source z bin, destination cell #, 
+          // destination x shift, destination z bin (with respect to 
+          // 7.5), weight).
+          cz = gcellnum2zbin(wdnq.x.x(jj))  // get the cell's z bin
+          hupnq.append(ii, wdnq.x.x(jj), 7.5-kk, cz, vv1.x(kk))
+        }
+      } // for kk     
+    } // for jj
+  } // for ii
+
+  // Deallocate scratch vectors.
+  dealloc(a)
+}
+
+//** scalehupwts() -- scale the hookup table weights so they are converted 
+//  from -pA values to sensible weight values
+proc scalehupwts () { local a,ii,gvmin,gvmax,wvmin,wvmax localobj vv1
+  gvmin = $1
+  gvmax = $2
+  wvmin = $3
+  wvmax = $4
+
+  // Allocate scratch vectors.
+  a = allocvecs(vv1)
+
+  // Read the old Gordon cell weights.
+  vv1 = hupnq.getcol("wt")
+
+  // Make the weights positive.
+  vv1.mul(-1)
+  
+  // Clip the Gordon cell weights between gvmin and gvmax.
+  for ii=0,vv1.size-1 {
+    if (vv1.x(ii) < gvmin) vv1.x(ii) = gvmin
+    if (vv1.x(ii) > gvmax) vv1.x(ii) = gvmax
+  }
+
+  // Scale between wvmin and wvmax.
+  vv1.scale(wvmin,wvmax)
+
+  // Set the new weights.
+//  hupnq.setcol("wt",vv1)
+
+  // Deallocate scratch vectors.
+  dealloc(a)
+}
+
+//** huptable2cellconv() -- test function for showing that huptable has 
+// all significant convergence info
+obfunc huptable2cellconv () { local a,ii,jj localobj v1
+  // Allocate vectors.
+  a = allocvecs(v1)
+
+  // Create the new empty convergence table.
+  convnq = new NQS()
+  convnq.cp(wdnq)  // copy from original table
+  for ii=0,convnq.m-1 {  // zero out all data
+    convnq.v[ii].fill(0)
+  }
+
+  // Loop over all "Gordon" cells...
+  for ii=0,numgcs-1 {
+    // Select just the rows of the hupnq corresponding to the desired cell.
+    hupnq.select("destcell",wdnq.x.x(ii))
+
+    // Loop over all found rows for the desired cell...
+    for jj=0,hupnq.size-1 {
+      v1 = hupnq.getrow(jj)
+      
+      // Set the convergence matrix for cell ii.
+      convnq.v[ii].mset(v1.x(0),int(v1.x(2)-7.5),numgcxs,v1.x(4))
+    } // for jj
+  } // for ii
+
+  // Toggle back to the full table for hupnq.
+  hupnq.tog
+
+  // Deallocate scratch vectors.
+  dealloc(a)
+
+  return convnq
+}

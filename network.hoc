@@ -1,0 +1,1314 @@
+// $Id: network.hoc,v 1.126 2010/12/29 03:14:37 cliffk Exp $
+
+print "Loading network.hoc..."
+
+// Parameters for controlling where connectivity comes from
+loadsaveconnectivity=0 // Whether to make (0), load (1), or save (2) the connectivity table
+
+//* Numbers and connectivity params
+
+{declare("scale",1)}
+{declare("colW",1,"colH",1,"torus",0)}
+{declare("numcols",colW*colH)}
+{declare("dbgcols",0)} // whether to debug columns by making them have the same wiring and inputs
+{declare("colr",2)} // maximal trans-column projection distance; 0 within col; 1 next col etc
+{declare("colnq","o[5]","lcol",new List())}
+{declare("thalamusOn", 0)} // 1 = thalamic cells connected, 0 = completely disconnects all thalamic cells
+{declare("autotune",0)} // From stccol
+{declare("useSTDP",0)} // From stccol -- turn STDP on by default
+{sprint(tstr,"o[%d]",numcols) declare("col",tstr)}
+{sprint(tstr,"o[%d][%d]",colH,colW) declare("gcol",tstr)} // 2D column grid
+double div[CTYPi][CTYPi][colr+1]//div[i][j]==# of outputs from type i->j
+double wmat[CTYPi][CTYPi][STYPi][colr+1] // wmat[i][j][k]==weight from type i->j for synapse k
+double delm[CTYPi][CTYPi]//avg. delay from type i->j
+double deld[CTYPi][CTYPi]//delay variance from type i->j
+double conv[CTYPi][CTYPi][colr+1]
+dosetpmat=name_declared("pmat")==0
+{sprint(tstr,"d[%d][%d][%d]",CTYPi,CTYPi,colr+1) declare("pmat",tstr)}
+double prumat[CTYPi][CTYPi] //pruning matrix:prumat[i][j] specifies ratio (0-1) of synapses to prune
+double sprmat[CTYPi][CTYPi] //sprouting matrix:sprmat[i][j] specifies ratio (0-1) to sprout i->j pathway with
+double synloc[CTYPi][CTYPi]//location of synapses
+
+//* swire & related column variables -- from stccol
+declare("colside",400*sqrt(scale)) // column diameter in micrometers
+declare("swire",0) // whether to use 'spatial' wiring, 2 means use swirecut
+declare("checkers",0) // whether to arrange cells in checkerboard pattern
+declare("EEsq",(colside/2)^2,"EIsq",(colside/2)^2,"IEsq",(colside/1)^2,"IIsq",(colside/2)^2) // params for swirecut
+declare("slambda",15)
+double dels[CTYPi][CTYPi]//[STYPi] //stdev of delays
+double delv[CTYPi][CTYPi]//variance of delays
+double vcond[CTYPi][CTYPi]//[STYPi] //conduction velocities
+declare("layerzvar",500) // range of z location of cells in a layer (in micrometers); CK: was 25
+declare("colxydist",50) // distance between adjacent columns (x,y)
+declare("vlayerz",new Vector(CTYPi))
+declare("pseed",4321)
+declare("dvcond","d[2]") //intra layer conduction delays
+declare("maxsfall",0.001) // max fall-off in prob of connection @ opposite side of column (used by swire)
+declare("axonalvelocity",10000) // axonal velocity in um/ms -- this is 10 mm/s
+
+dvcond[0] = 1   //if presynaptic cell is excit, conduction delay == 1.0 m/s
+dvcond[1] = 0.4 //if presynaptic cell is inhib, conduction delay == 0.4 m/s
+
+// <-- stccol
+//* other variables
+declare("mknetnqss",1) // whether COLUMN should make connsnq,cellsnq
+declare("EEGain",4*15/11*eemod,"EIGain",15*eimod,"IEGain",4*15/11*iemod,"IIGain",4*15/11*iimod)
+declare("NMAMR",0.1,"EENMGain",1,"EIGainInterC",0.125,"EEGainInterC",0.325*0.5)
+declare("TCNM",0) // whether TC->NM2 on
+declare("E2I4",0) // whether E2 hits I4
+declare("E5IRE",0) // whether E5R,E5B hits IRE in neighboring columns
+declare("SMFCTR",10) // multiplier for # of SM cells
+
+if(autotune) {
+  seadsetting_INTF6 = 2
+  wsetting_INTF6 = 1 // use sywv during sim
+} else if(useSTDP) {
+  seadsetting_INTF6 = 3 // use plasticity
+} else {
+  seadsetting_INTF6 = 2 // fixed weights
+}
+wsetting_INTF6 = 1 // use sywv during sim (needed z-dependent efferent weights)
+
+declare("wnqstr","") // intracol wiring NQS (single column)
+if (loadsaveconnectivity==1) wnqstr="connectivity.nqs" // CK: Load NQS from file
+// stccol -->
+
+//* prdiv() - print div
+proc prdiv () { local ii,jj
+  for ii=0,CTYPi-1 for jj=0,CTYPi-1 if(div[ii][jj][0]) {
+    printf("div[%s][%s][0]=%g\n",CTYP.o(ii).s,CTYP.o(jj).s,div[ii][jj][0])
+  }
+}
+
+// %con (con/pre) = %div (div/post)
+DEAD_DIV_INTF6=0
+{declare("jcn",1)}
+{declare("disinhib",0)} //iff==1 , turn off inhibition, by setting wmat[I%d][...]==0 in inhiboff()
+{declare("scale",1)}
+
+declare("dstr",datestr,"setdviPT",NORM)
+batch_flag=1 // CK: yes, use batch (=1); was: 
+{declare("params","not batch","ofile",output_file)}
+{declare("dvseed",534023)} // seed for wiring
+
+dosetcpercol=name_declared("cpercol")==0 // whether to set values in cpercol or use user-supplied values
+{sprint(tstr,"d[%d]",CTYPi) declare("cpercol",tstr)} // cells of a specific type per column
+{declare("vcpercol",new Vector(CTYPi))}
+
+// <-- stccol
+sprint(tstr,"d[%d][%d]",CTYPi,CTYPi)
+if(!(i=name_declared("delmscale"))) {
+  declare("delmscale",tstr) // scale delm values by this #
+}
+if(!i) {
+  for i=0,CTYPi-1 for j=0,CTYPi-1 delmscale[i][j]=1
+}
+
+//** mklayerz -- get average z location of a layer, based on frana and tononi
+// returns value in micrometers. 0 is at top (layer 1), max val
+// is at layer 6 ... actual #s don't matter, only distances between
+// the layers matters...
+// Layers are defined in nqsnet.hoc, "layer" procedure
+proc mkvlayerz () { local i,vl, cortthaldist
+  cortthaldist=50000 // CK: WARNING, KLUDGY -- Distance from relay nucleus to cortex -- ~5 cm = 50,000 um
+  vlayerz.indgen(0,CTYPi-1,1)
+  
+  vlayerz.apply("layer")
+  for vtr(&vl,vlayerz,&i) {
+    if(int(vl) == 2 || int(vl) == 3) {vlayerz.x(i)=1740+cortthaldist // average of 1540+1940 from frana
+    } else if(int(vl) == 4) {vlayerz.x(i) = (1740+1130)/2+cortthaldist // Halfway between 2/3 and 5
+    } else if(int(vl) == 5) {vlayerz.x(i) = 1130+cortthaldist
+    } else if(int(vl) == 6) {vlayerz.x(i) = 488+cortthaldist
+    } else if(int(vl) == 7) {vlayerz.x(i) = 300// WARNING, KLUDGY: guess distance from relay to reticular nuclei
+    } else if(int(vl) == 8) {vlayerz.x(i) = 0
+    } else 			 		{vlayerz.x(i) = -1000} // This shold never happen
+  }
+}
+// stccol -->
+
+//* setcpercol - set # of cells per column
+proc setcpercol () { local i // (/u/samn/vcsim/notebook.dol_1:24562)(notebook.dol_1:24492)
+  if(dosetcpercol) { // if user didn't supply values (default), set # of cells of a type per column
+      cpercol[E2]  = 150 * scale
+      cpercol[I2]  =  25 * scale
+      cpercol[I2L] =  25 * scale
+      cpercol[E5R] =  167 * scale
+      cpercol[E5B] =  72 * scale
+      cpercol[I5]  =  40 * scale
+      cpercol[I5L] =  40 * scale
+      cpercol[E6] =   192 * scale
+      cpercol[I6] =   32 * scale
+      cpercol[I6L] =  32 * scale
+      if (thalamusOn == 1) {
+        cpercol[TC] =   10 * scale
+        cpercol[IRE] =  10 * scale
+      }
+/*      cpercol[SM]  =  SMFCTR * cpercol[TC] * scale // CK: Let's just ignore somatosensory for now*/
+  }
+  {vcpercol.resize(CTYPi) vcpercol.fill(0)} // store the values in a vector
+  for i=0,CTYPi-1 vcpercol.x(i)=cpercol[i]
+}
+
+//* setpmat()
+proc setpmat () { local pre,po,ii,jj,kk
+  if(!dosetpmat) return // if pmat setup by user (in notebook), then don't reset its values
+  for ii=0,CTYPi-1 for jj=0,CTYPi-1 for kk=0,1 pmat[ii][jj][kk]=0
+
+// Add connections to/from the thalamus
+  if (thalamusOn == 1) {
+	// SM = skin. SM -> TC
+	pmat[SM][TC][0] = 0.5 / 6
+	pmat[SM][TC][1] = 0.5 / 6
+	pmat[SM][TC][2] = 0.5 / 6
+  
+	pmat[E6][TC][0] = 0.1
+	pmat[E6][IRE][0] = 0.1
+	pmat[TC][IRE][0] = 0.4
+	pmat[IRE][IRE][0] = 0.1
+	pmat[IRE][TC][0] = 0.3
+	pmat[TC][E2][0] = 0.1
+	pmat[TC][E4][0] = 0.2
+	pmat[TC][E5B][0] = 0.1
+	pmat[TC][E5R][0] = 0.1
+	pmat[TC][E6][0] = 0.1
+	pmat[TC][I2][0] = 0.1
+	pmat[TC][I4][0] = 0.1
+	pmat[TC][I5][0] = 0.1
+	pmat[TC][I6][0] = 0.1
+  }
+
+  pmat[E2][E2][0]=0.2     // weak by wiring matrix in (Weiler et al., 2008)
+  pmat[E2][E2][1]=0//0.14
+  pmat[E2][E5B][0]=0.8    // strong by wiring matrix in (Weiler et al., 2008)
+  pmat[E2][E5R][0]=0.8    // strong by wiring matrix in (Weiler et al., 2008)
+  pmat[E2][I5L][0]=0.51   // L2/3 E -> L5 LTS I (justified by (Apicella et al., 2012)
+  pmat[E2][E6][0]=0       // none by wiring matrix in (Weiler et al., 2008)
+  pmat[E2][I2L][0]=0.51
+  pmat[E2][I2][0]=0.43
+  pmat[E2][I2][1]=0.14
+  
+  pmat[E5B][E2][0]=0          // none by wiring matrix in (Weiler et al., 2008)
+  pmat[E5B][E2][1]=0.25
+  pmat[E5B][E2][2]=0.1
+  pmat[E5B][E5B][0]=0.04 * 4  // set using (Kiritani et al., 2012) Fig. 6D, Table 1, value x 4 
+  pmat[E5B][E5B][1]=0.25 
+  pmat[E5B][E5B][2]=0.1 
+  pmat[E5B][E5R][0]=0         // set using (Kiritani et al., 2012) Fig. 6D, Table 1 
+  pmat[E5B][E5R][1]=0.25 
+  pmat[E5B][E5R][2]=0.1
+  pmat[E5B][E6][0]=0          // none by suggestion of Ben and Gordon over phone
+  pmat[E5B][I5L][0]=0         // ruled out by (Apicella et al., 2012) Fig. 7
+  pmat[E5B][I5L][1]=0.14
+  pmat[E5B][I5L][2]=0.07
+  pmat[E5B][I5][0]=0.43 // CK: was 0.43 but perhaps the cause of the blow-up?
+  pmat[E5B][I5][1]=0.14
+  pmat[E5B][I5][2]=0.07
+
+  pmat[E5R][E2][0]=0.2        // weak by wiring matrix in (Weiler et al., 2008)
+  pmat[E5R][E5B][0]=0.21 * 4  // set using (Kiritani et al., 2012) Fig. 6D, Table 1, value x 4
+  pmat[E5R][E5B][1]=0.25 
+  pmat[E5R][E5R][0]=0.11 * 4  // set using (Kiritani et al., 2012) Fig. 6D, Table 1, value x 4 
+  pmat[E5R][E5R][1]=0.14 
+  pmat[E5R][E6][0]=0.2        // weak by wiring matrix in (Weiler et al., 2008)
+  pmat[E5R][I5L][0]=0         // ruled out by (Apicella et al., 2012) Fig. 7
+  pmat[E5R][I5][0]=0.43
+  pmat[E5R][I5][1]=0.14
+
+  pmat[E6][E2][0]=0           // none by wiring matrix in (Weiler et al., 2008)
+  pmat[E6][E5B][0]=0.2        // weak by wiring matrix in (Weiler et al., 2008)
+  pmat[E6][E5R][0]=0.2        // weak by wiring matrix in (Weiler et al., 2008)
+  pmat[E6][E6][0]=0.2         // weak by wiring matrix in (Weiler et al., 2008)
+  pmat[E6][I6L][0]=0.51
+  pmat[E6][I6][0]=0.43
+  pmat[E6][I6][1]=0.14
+
+  pmat[I2L][E2][0]=0.35
+  pmat[I2L][I2L][0]=0.09
+  pmat[I2L][I2][0]=0.53
+  pmat[I2][E2][0]=0.44
+  pmat[I2][I2L][0]=0.34
+  pmat[I2][I2][0]=0.62
+  pmat[I5L][E5B][0]=0.35
+  pmat[I5L][E5R][0]=0.35
+  pmat[I5L][I5L][0]=0.09
+  pmat[I5L][I5][0]=0.53
+  pmat[I5][E5B][0]=0.44
+  pmat[I5][E5R][0]=0.44
+  pmat[I5][I5L][0]=0.34
+  pmat[I5][I5][0]=0.62
+  pmat[I6L][E6][0]=0.35
+  pmat[I6L][I6L][0]=0.09
+  pmat[I6L][I6][0]=0.53
+  pmat[I6][E6][0]=0.44
+  pmat[I6][I6L][0]=0.34
+  pmat[I6][I6][0]=0.62
+}
+
+//* scalepmat(fctr) - multiply values in pmat by fctr
+proc scalepmat () { local fctr,from,to,cl
+  fctr=$1
+  for from=0,CTYPi-1 for to=0,CTYPi-1 for cl=0,1 pmat[from][to][cl] *= fctr
+}
+
+//* pmat2nq - return an NQS with info in pmat
+obfunc pmat2nq () { local i,j,k localobj nqpmat
+  nqpmat=new NQS("froms","tos","from","to","cold","pij")
+  {nqpmat.strdec("froms") nqpmat.strdec("tos")}
+  for i=0,CTYPi-1 for j=0,CTYPi-1 for k=0,colr if(pmat[i][j][k]) {
+    nqpmat.append(CTYP.o(i).s,CTYP.o(j).s,i,j,k,pmat[i][j][k])
+  }  
+  return nqpmat
+}
+
+//* nq2pmat - load NQS ($o1) into pmat
+proc nq2pmat () { local i,j,k localobj nq,vf,vto,vc,vpij
+  {nq=$o1 nq.tog("DB") vf=nq.getcol("from") vto=nq.getcol("to") vc=nq.getcol("cold") vpij=nq.getcol("pij")}
+  for i=0,CTYPi-1 for j=0,CTYPi-1 for k=0,colr pmat[i][j][k]=0
+  for i=0,vf.size-1 pmat[vf.x(i)][vto.x(i)][vc.x(i)]=vpij.x(i)
+  print "loaded " , nq , " into pmat"
+}
+
+//* synapse locations DEND SOMA AXON
+proc setsynloc () { local from,to
+  for from=0,CTYPi-1 for to=0,CTYPi-1 {
+    if(ice(from)) {
+      if(IsLTS(from)) {
+        synloc[from][to]=DEND // distal [GA2] - from LTS
+      } else {
+        synloc[from][to]=SOMA // proximal [GA] - from FS
+      }
+    } else {
+      synloc[from][to]=DEND // E always distal. use AM2,NM2
+    }
+  }
+}
+
+//* setdelmats -- setup delm,deld
+proc setdelmats () { local from,to,ii,jj
+  for from=0,CTYPi-1 for to=0,CTYPi-1 {
+    if(synloc[from][to]==DEND) {
+      delm[from][to]=4 * delmscale[from][to] // stccol
+      deld[from][to]=1
+    } else {
+      delm[from][to]=2.0 * delmscale[from][to]  // stccol
+      deld[from][to]=0.2
+    }
+  }
+  // snum=0
+  // for ii=0,CTYPi-1 for jj=0,CTYPi-1 snum+=int(pmat[ii][jj][0]*numc[ii]*numc[jj]+1)
+}
+
+
+//* weight params
+//** delay all 2+/-0.02 within column for now
+proc setwmat () { local from,to,sy,gn,c
+  for from=0,CTYPi-1 for to=0,CTYPi-1 for sy=0,STYPi-1 for c=0,colr wmat[from][to][sy][c]=0
+
+// <-- stccol
+  
+
+  // Thalamic connection weights
+  if (thalamusOn == 1) {
+	//** skin -> thalamus
+	wmat[SM][TC][AM2][0] = 10
+
+	wmat[E6][TC][AM2][0] = 0.75
+	wmat[E6][TC][NM][0] = 0.075
+	wmat[E6][IRE][AM2][0] = 0.75
+	wmat[E6][IRE][NM][0] = 0.075
+
+	wmat[TC][E2][AM2][0] = 0.5
+	wmat[TC][E2][NM][0] = 0.05
+	wmat[TC][E4][AM2][0] = 1.0
+	wmat[TC][E4][NM][0] = 0.1
+	wmat[TC][E5B][AM2][0] = 1.5
+	wmat[TC][E5B][NM][0] = 0.15
+	wmat[TC][E5R][AM2][0] = 1.5
+	wmat[TC][E5R][NM][0] = 0.15
+	wmat[TC][E6][AM2][0] = 1.0
+	wmat[TC][E6][NM][0] = 0.1
+
+	wmat[TC][I2][AM2][0] = 1.5
+	wmat[TC][I4][AM2][0] = 1.5
+	wmat[TC][I5][AM2][0] = 1.5
+	wmat[TC][I6][AM2][0] = 1.5
+	wmat[TC][IRE][AM2][0] = 0.75
+	wmat[TC][IRE][NM][0] = 0.15
+
+	wmat[IRE][TC][GA2][0] = 1.0
+	wmat[IRE][IRE][GA2][0] = 0.3
+  }
+
+  //*** neocx -> neocx
+  wmat[E2][E2][AM2][0]=0.66
+  wmat[E2][E2][AM2][1]=0.47 * EEGainInterC
+//  wmat[E2][E4][AM2][0]=0.36
+  wmat[E2][E5B][AM2][0]=0.36
+  wmat[E2][E5R][AM2][0]=0.93
+  wmat[E2][I5L][AM2][0]=0.36
+  wmat[E2][E6][AM2][0]=0
+  wmat[E2][I2L][AM2][0]=0.23
+
+  wmat[E2][I2][AM2][0] = 0.23
+  wmat[E2][I2][AM2][1] = 1.5 * EIGainInterC
+
+/*  if(E2I4) {
+//    wmat[E2][I4][AM2][0]=0.18
+    wmat[E2][I4][AM2][1]=0.18 // stccol
+//    wmat[E2][I4L][AM2][0]=0.09
+//    wmat[I2][E4][AM2][0]=0.25
+  } */
+/* no layer 4 since M1 model
+  wmat[E4][E2][AM2][0]=0.58*e4e2wt
+  wmat[E4][E4][AM2][0]=0.95
+  wmat[E4][E5B][AM2][0]=1.01
+  wmat[E4][E5R][AM2][0]=0.54
+  wmat[E4][E6][AM2][0]=2.27
+  wmat[E4][I4L][AM2][0]=0.23
+
+  wmat[E4][I4][AM2][0] = 0.23
+  wmat[E4][I4][AM2][1] = 1.5 * EIGainInterC
+*/
+  wmat[E5B][E2][AM2][0]=0    // ruled out based on Ben and Gordon conversation
+  wmat[E5B][E2][AM2][1]=0.47 * EEGainInterC
+  wmat[E5B][E2][AM2][2]=0.47 * EEGainInterC
+//  wmat[E5B][E4][AM2][0]=0.17
+  wmat[E5B][E5B][AM2][0]=0.66
+  wmat[E5B][E5B][AM2][1]=0.47 * EEGainInterC
+  wmat[E5B][E5B][AM2][2]=0.47 * EEGainInterC
+  wmat[E5B][E5R][AM2][0]=0   // pulled from Fig. 6D, Table 1 of (Kiritani et al., 2012)
+  wmat[E5B][E5R][AM2][1]=0.47 * EEGainInterC
+  wmat[E5B][E5R][AM2][2]=0.47 * EEGainInterC
+  wmat[E5B][E6][AM2][0]=0    // ruled out based on Ben and Gordon conversation
+
+  wmat[E5B][I2L][AM2][1]=1.5 * EIGainInterC
+  wmat[E5B][I2L][AM2][2]=1.5 * EIGainInterC
+
+  wmat[E5B][I5L][AM2][0]=0   // ruled out by (Apicella et al., 2012) Fig. 7
+  wmat[E5B][I5L][AM2][1]=1.5 * EIGainInterC
+  wmat[E5B][I5L][AM2][2]=1.5 * EIGainInterC
+
+  wmat[E5B][I5][AM2][0]=0.23  //(Apicella et al., 2012) Fig. 7F (weight = 1/2 x weight for E5R->I5)
+  wmat[E5B][I5][AM2][1]=1.5 * EIGainInterC
+  wmat[E5B][I5][AM2][2]=1.5 * EIGainInterC
+
+  wmat[E5R][E2][AM2][0]=0.66
+//  wmat[E5R][E4][AM2][0]=0.48
+  wmat[E5R][E5B][AM2][0]=0.66
+  wmat[E5R][E5B][AM2][1]=0.47 * EEGainInterC
+  wmat[E5R][E5R][AM2][0]=0.66
+  wmat[E5R][E5R][AM2][1]=0.47 * EEGainInterC
+  wmat[E5R][E6][AM2][0]=0.66
+  wmat[E5R][I5L][AM2][0]=0    // ruled out by (Apicella et al., 2012) Fig. 7
+  wmat[E5R][I5][AM2][0]=0.46  // (Apicella et al., 2012) Fig. 7E (weight = 2 x weight for E5B->I5)
+  wmat[E5R][I5][AM2][1]=1.5 * EIGainInterC
+
+// <-- stccol
+/*  if(E5IRE) {
+    wmat[E5B][IRE][AM2][1]=0.5 
+    wmat[E5R][IRE][AM2][1]=0.5
+    wmat[E5B][IRE][AM2][2]=0.25
+    wmat[E5R][IRE][AM2][2]=0.25
+  } */
+// stccol -->
+
+  wmat[E6][E2][AM2][0]=0
+//  wmat[E6][E4][AM2][0]=0
+  wmat[E6][E5B][AM2][0]=0.66
+  wmat[E6][E5R][AM2][0]=0.66
+  wmat[E6][E6][AM2][0]=0.66
+  wmat[E6][I6L][AM2][0]=0.23
+  wmat[E6][I6][AM2][0]=0.23
+  wmat[E6][I6][AM2][1]=1.5 * EIGainInterC
+
+  wmat[I2L][E2][GA2][0]=0.83
+/*  wmat[I2L][E5B][GA2][0]=0.83
+  wmat[I2L][E5R][GA2][0]=0.83
+  wmat[I2L][E6][GA2][0]=0.83 */
+  wmat[I2L][I2L][GA2][0]=1.5
+  wmat[I2L][I2][GA2][0]=1.5
+/*  wmat[I2L][I5][GA2][0]=0.83
+  wmat[I2L][I6][GA2][0]=0.83 */
+
+  wmat[I2][E2][GA][0]=1.5
+  wmat[I2][I2L][GA][0]=1.5
+  wmat[I2][I2][GA][0]=1.5
+/* no layer 4 since M1 model
+  wmat[I4L][E4][GA2][0]=0.83
+  wmat[I4L][I4L][GA2][0]=1.5
+  wmat[I4L][I4][GA2][0]=1.5
+
+  wmat[I4][E4][GA][0]=1.5
+  wmat[I4][I4L][GA][0]=1.5
+  wmat[I4][I4][GA][0]=1.5
+*/
+//  wmat[I5L][E2][GA2][0]=0.83
+  wmat[I5L][E5B][GA2][0]=0.83
+  wmat[I5L][E5R][GA2][0]=0.83
+/*  wmat[I5L][E6][GA2][0]=0.83
+  wmat[I5L][I2][GA2][0]=0.83 */
+  wmat[I5L][I5L][GA2][0]=1.5
+  wmat[I5L][I5][GA2][0]=1.5
+//  wmat[I5L][I6][GA2][0]=0.83
+
+  wmat[I5][E5B][GA][0]=1.5
+  wmat[I5][E5R][GA][0]=1.5
+  wmat[I5][I5L][GA][0]=1.5
+  wmat[I5][I5][GA][0]=1.5
+
+/*  wmat[I6L][E2][GA2][0]=0.83
+  wmat[I6L][E5B][GA2][0]=0.83
+  wmat[I6L][E5R][GA2][0]=0.83 */
+  wmat[I6L][E6][GA2][0]=0.83
+/*  wmat[I6L][I2][GA2][0]=0.83
+  wmat[I6L][I5][GA2][0]=0.83 */
+  wmat[I6L][I6L][GA2][0]=1.5
+  wmat[I6L][I6][GA2][0]=1.5
+
+  wmat[I6][E6][GA][0]=1.5
+  wmat[I6][I6L][GA][0]=1.5
+  wmat[I6][I6][GA][0]=1.5
+
+  //set NMDA weights
+  for from=0,CTYPi-1 for to=0,CTYPi-1 for c=0,colr wmat[from][to][NM2][c]=NMAMR*wmat[from][to][AM2][c]
+  //gain control
+  for from=0,CTYPi-1 for to=0,CTYPi-1 for sy=AM,GA2 for c=0,colr if(wmat[from][to][sy][c] > 0) {
+    if(ice(from)) {
+      if(ice(to)) {
+        gn = IIGain
+      } else {
+        gn = IEGain
+      }
+      if(IsLTS(from) && !IsLTS(to)) gn *= 0.5
+    } else {
+      if(ice(to)) {
+        gn = EIGain 
+        if(IsLTS(to)) gn *= 0.5
+      } else {
+        gn = EEGain
+        if(sy==NM || sy==NM2) gn *= EENMGain // E->E NMDA gain
+      }
+    }
+    wmat[from][to][sy][c] *= gn 
+  }
+  if(!TCNM) for i=0,colr-1 for case(&j,NM,NM2) wmat[TC][E4][j][i]=0 // stccol
+}
+
+// %con (con/pre) = %div (div/post)
+
+//* prune using values in prumat
+proc pruc () { local i,j
+  for i=0,CTYPi-1 for j=0,CTYPi-1{
+      if(div[i][j][0] && numc[i] && numc[j] && prumat[i][j]){
+        printf("Warning: pruning random %.2f%% of %s->%s syns\n",prumat[i][j]*100,CTYP.o(i).s,CTYP.o(j).s)
+        for ixt(i) XO.prune(prumat[i][j],j)
+      }
+  }
+}
+
+//* get sprouting value assuming 0% sprouting == 50% pruning
+func getspr () { local pr
+  pr = $1
+  return ((0.5-pr)/.5)*100
+}
+
+//* turn off pruning
+proc pruoff () { local i,j
+ for i=0,CTYPi-1 for j=0,CTYPi-1 prumat[i][j]=0
+ for i=0,allcells-1 INTF6[i].prune(0)
+}
+
+//* set all entries in pruning matrix to $1
+proc setpru () { local from,to,val
+  val=$1
+  pruoff() // first turn off pruning
+  for from=0,CTYPi-1 for to=0,CTYPi-1 prumat[from][to]=val
+}
+
+//* print prumat
+proc prumatpr () { local i,j
+  for i=0,CTYPi-1 { for j=0,CTYPi-1{
+      printf("%.2f  ",prumat[i][j])
+   }
+   printf("\n")
+  }
+}
+
+//* clear sprmat entries to 0
+proc clrsprmat () { local i,j
+  for i=0,CTYPi for j=0,CTYPi sprmat[i][j]=0
+}
+
+//* unkill/prune all cells
+proc unkp () {
+  for i=0,allcells-1 {
+    ce.o(i).flag("dead",0)
+    ce.o(i).prune(0)
+  }
+}
+
+//* kill cells who's ids are in $o1
+proc dokill () { local id
+  for vtr(&id,$o1) ce.o(id).flag("dead",1)
+}
+
+//* getkillids - gets ids of cells to kill in $o1 but excludes cells that are stim'ed
+//$1=cell type to kill,$2=prct of cells to kill,$o3=vq stim nqs,$4=out vector of kill ids,$5=rnd seed
+func getkillids () { local killcnt,i,j,ct,prct localobj vq,vkid,rd
+  ct=$1 prct=$2 vq=$o3 vkid=$o4 killcnt=int(prct*numc[ct]) vkid.resize(0) j=0 i=ix[ct]
+  rd=new Random() rd.ACG($5)
+  while(j<killcnt){
+    i=rd.discunif(ix[ct],ixe[ct])
+    if(!vq.v[0].contains(i)){
+      j+=1
+      vkid.append(i)
+    }
+    i+=1
+  }
+  return killcnt
+}
+
+//* read .net file
+strdef netfile
+{sp = new NQS() cp = new NQS()}
+
+//* CREATE CELLS
+// %con (con/pre) = %div (div/post)
+n=ty=id=0
+
+//* sprcells() sprout cells in specific pathways using sprmat, $1=seed for rand generator
+//max div is still 0.75*poty
+func sprcells () { local id,a,prty,poty,sz,ls,mx,i localobj vid,vnewid,vnewdel,rd,vd,vtmp
+  ls=$1 a=allocvecs(vid,vnewid,vnewdel,vd,vtmp) rd=new Random() rd.ACG(ls)
+  for prty=0,CTYPi-1 for poty=0,CTYPi-1 if(sprmat[prty][poty]) for id=ix[prty],ixe[prty] {
+    ce.o(id).getdvi(vid) ce.o(id).getdvi(0.2,vd)
+    sz=div[prty][poty][0]*sprmat[prty][poty] mx=0.75*numc[poty]
+    if(vd.x(poty)>=mx)continue//already @ max size
+    while(sz+vd.x(poty)>mx) sz-=1
+    vrsz(sz*4,vtmp,vnewid) rd.discunif(ix[poty],ixe[poty]) vtmp.setrand(rd)
+    vtmp.uniq(vnewid) vtmp.resize(0)
+    for i=0,vnewid.size-1 if(!vid.contains(vnewid.x(i))) vtmp.append(vnewid.x(i))
+    vtmp.resize(sz)
+    if(vtmp.size) {
+      vnewdel.resize(vtmp.size)
+      rd.uniform(delm[prty][poty]-deld[prty][poty],delm[prty][poty]+deld[prty][poty])
+      vnewdel.setrand(rd)
+      ce.o(id).setdvi(vtmp,vnewdel,2)
+    }
+  }
+  dealloc(a)
+  return 1
+}
+
+//** gethublims(col,hubtype,hubfactor,numhubs,mode) 
+// get a matrix of size CTYPi X CTYPi, specifying div with mat.x(hubtype,othertype)
+// and conv with mat.x(othertype,hubtype)
+// hubtype = type of hub. hubfactor = desired ratio of hub div/conv vs non-hub div/conv
+// numhubs = # of hubs. col = COLUMN for which to set hubs.
+// mode == 0 <-- hub div(conv) is set to hubfactor * original div(conv)
+// mode == 1 <-- hub div(conv) is set so that final hub div = hubfactor * final non_hub div (same for conv)
+//  formula is based on:  m / ((N-H*m) / (C-H)) = F , and then solving for m
+//   m = div for the hubs,  F = desired ratio of final hub div to final non-hub div
+//   N = # of synapses (links),  C = total # of postsynaptic cells (including hubs) , H = # of hubs
+//   similarly done for conv , but replace N with appropriate values
+//   (/u/samn/intfcol/notebook.dol_1:21933)
+obfunc gethublims () { local ct,mode,from,to,lim,nc,nhubs,fctr localobj col,mat
+  {col=$o1 ct=$2 fctr=$3 nhubs=$4 mode=$5 mat=new Matrix(CTYPi,CTYPi)}
+  for to=0,CTYPi-1 if(col.numc[to] && col.div[ct][to]) {
+    {nc=col.numc[to] if(ct==to)nc-=1} // deduct for self-link
+    if(mode==0) {
+      lim = int( 0.5 + col.div[ct][to]*fctr )
+    } else {
+      lim = int( 0.5 + col.div[ct][to]*col.numc[ct]*fctr/(col.numc[ct]-nhubs+fctr*nhubs) )
+    }
+    mat.x(ct,to) = MINxy(lim, nc) // at most div to all postsynaptic cells
+  }
+  for from=0,CTYPi-1 if(col.numc[from] && col.div[from][ct]) {
+    {nc=col.numc[from] if(ct==from)nc-=1} // deduct for self-link
+    if(mode==0) {
+      lim = int( 0.5 + col.conv[from][ct]*fctr )
+    } else {
+      lim = int( 0.5 + col.div[from][ct]*col.numc[from]*fctr/(col.numc[ct]-nhubs+fctr*nhubs) )
+    }
+    mat.x(from,ct) = MAXxy(MINxy(lim, nc),1) // at most conv from all presynaptic cells, but at least 1
+  }
+  return mat
+}
+
+//** addhubs(column,cell-type,numhubs,scaling factor,skipI[,seed,allowz,hubmode,verbose])
+// add hubs to the network by stealing wires from other neurons
+// $o1 == column
+// $2 == cell type of hub
+// $3 == number of hubs to add
+// $4 == scaling factor (should be > 1.0) for conv,div of hub
+// $5 == skip div/conv of I cells
+// $6 == seed - optional
+// $7 == allowz - whether to allow pulling all links from/to another cell
+// $8 == hubmode - which mode to use for gethublims (see above)
+// $9 == verbose - optional
+// function returns a Vector containing the ids of the cells selected as hubs (within column ids)
+obfunc addhubs () { local a,ct,fctr,nhubs,idx,jdx,lseed,hubid,szorig,cursz,preid,poid,lim,skipI,to,from,vrb,changed,allowz,hmode\
+                 localobj col,ce,vin,vout,nq,vd,vc,vdd,vdt,vddt,vpicked,vhubid,vw1,vw2,vsyn,vprob,vsynt,vtmp,vdsz,vcsz,mhlim
+  col=$o1 ct=$2 nhubs=$3 fctr=$4 skipI=$5
+  if(numarg()>5) lseed=$6 else lseed=1234
+  if(numarg()>6) allowz=$7 else allowz=1
+  if(numarg()>7) hmode=$8 else hmode=0
+  if(numarg()>8) vrb=$9 else vrb=0
+  {ce=col.ce hashseed_stats(lseed,lseed,lseed)}
+  a=allocvecs(vin,vout,vd,vc,vdd,vdt,vddt,vpicked,vw1,vw2,vsyn,vprob,vsynt,vtmp,vdsz,vcsz)
+  vrsz(col.allcells,vin,vout,vd,vc,vdd,vdt,vddt,vpicked,vw1,vw2,vsyn,vprob,vsynt,vdsz,vcsz,vtmp)
+  mhlim=gethublims(col,ct,fctr,nhubs,hmode)
+  //vin,vout = input/output markers. vd,vc = div/conv.
+  //vdd div/conv delays, vdt div/conv temp. vddt=div/conv delay temp
+  //vpicked=which cells already picked as hubs
+  vhubid=new Vector()
+  {vhubid.indgen(col.ix[ct],col.ixe[ct],1) vhubid.shuffle() vhubid.resize(nhubs)}
+  if(vrb) vlk(vhubid)
+  for idx=0,vhubid.size-1 vpicked.x(vhubid.x(idx))=1 
+  for idx=0,vhubid.size-1 { hubid=vhubid.x(idx) 
+    if(vrb) printf("hub%d id = %d\n",idx+1,hubid)
+    {ce.o(hubid).getdvi(vd,vdd,vw1,vw2,vprob,vsyn) ce.o(hubid).getconv(vc)}//IDs of post/presynaptic cells
+    {ce.o(hubid).getconv(1.2,vcsz) vdsz.resize(CTYPi) vdsz.fill(0)}//counts of post/pre types
+    for jdx=0,vd.size-1 vdsz.x(ce.o(vd.x(jdx)).type)+=1
+    {vout.fill(0) vin.fill(0)}     //init as 0
+    for jdx=0,vd.size-1 vout.x(vd.x(jdx))=1 //mark current postsynaptic cells
+    for jdx=0,vc.size-1 vin.x(vc.x(jdx))=1  //mark current presynaptic cells
+    for to=0,CTYPi-1 if(col.numc[to] && col.div[ct][to] && (!skipI || !ice(to))) {
+      cursz=szorig=vdsz.x(to) // update divergence
+      if(vrb) print "\torig div -> " , CTYP.o(to).s, " = " , szorig
+      {lim=mhlim.x(ct,to) changed=1}
+      while(cursz<lim && changed==1) { changed=0
+        for(preid=col.ix[ct];preid<=col.ixe[ct] && cursz<lim;preid+=1) {// pick same presynaptic type
+          if(vpicked.x(preid)) continue //dont take from other hubs
+          ce.o(preid).getdvi(vdt,vddt,vw1,vw2,vprob,vsynt) 
+          vtmp.fill(0)
+          for jdx=0,vdt.size-1 vtmp.x(ce.o(vdt.x(jdx)).type)+=1
+          if(!allowz && vtmp.x(to)<=1)continue//dont want to turn div of another cell to 0
+          for jdx=0,vdt.size-1 { poid=vdt.x(jdx) // go thru postsynaptic cells looking for target type            
+            if(ce.o(poid).type==to && poid!=hubid && vout.x(poid)==0) { cursz+=1
+              {vd.append(poid) vdd.append(vddt.x(jdx)) vsyn.append(vsynt.x(jdx))}
+              {vdt.remove(jdx) vddt.remove(jdx) vsynt.remove(jdx)}
+              ce.o(preid).setdvi(vdt,vddt,vsynt) // update presynaptic cell
+              vout.x(poid)=changed=1 // this cell synapses on poid
+              break
+            }
+          }
+        }
+      }
+      if(vrb) print "\tnew div -> " , CTYP.o(to).s, " = " , cursz
+    }
+    ce.o(hubid).setdvi(vd,vdd,vsyn) // update hub dvi
+    for from=0,CTYPi-1 if(col.numc[from] && col.div[from][ct] && (!skipI || !ice(from))) {
+      cursz=szorig=vcsz.x(from) // update convergence
+      {lim=mhlim.x(from,ct) changed=1}
+      if(vrb) print "\torig conv <- ", CTYP.o(from).s, " = " , szorig
+      while(cursz<lim && changed==1) { changed=0
+        for(preid=col.ix[from];preid<=col.ixe[from]&&cursz<lim;preid+=1) {
+          if(preid==hubid || vin.x(preid)) continue // don't make self or double-connects
+          ce.o(preid).getdvi(vdt,vddt,vw1,vw2,vprob,vsynt)
+          for jdx=0,vdt.size-1{
+            poid = vdt.x(jdx)
+            if(vpicked.x(poid)) continue // don't take wires from other hubs            
+            if(ce.o(poid).type==ct){ ce.o(poid).getconv(1.2,vtmp)
+              if(allowz || vtmp.x(from)>1) { // make sure not to remove all inputs of a type to a cell
+                vdt.x( jdx ) = hubid // reassign input to hub
+                ce.o(preid).setdvi(vdt,vddt,vsynt) // reset presynaptic cell's div
+                vin.x( preid ) = changed = 1 // mark input
+                cursz += 1
+                break
+              }
+            }
+          }
+        }
+      }
+      if(vrb) print "\tnew conv <- " , CTYP.o(from).s, " = " , cursz
+    }    
+  }
+  {dealloc(a) return vhubid}
+}
+
+//* mkcolnqs - make an nqs with current pmat,wmat,delm,deld info for use by a COLUMN for wiring
+// "dist" represents distance between columns: dist==0 for intra-COLUMN setup, dist>0 for INTER-COLUMN setup
+proc mkcolnqs () { local from,to,sy,idx,d,c,fctr localobj froms,tos,sys
+  if(numarg()>0) fctr=$1 else fctr=1 // -- for adjusting pmat
+  idx=0 // For setting column -- ignore for now
+  
+  // Adjust wmat if required
+  if (fctr!=1) for from=0,CTYPi-1 for to=0,CTYPi-1 for sy=0,STYPi-1 for c=0,colr wmat[from][to][sy][c] *= fctr
+  
+  {nqsdel(colnq[idx]) colnq[idx]=new NQS("froms","tos","sys","from","to","sy","w","pij","delm","deld","loc","dist")}
+  colnq[idx].strdec("froms","tos","sys")
+  for from=0,CTYPi-1 { froms=CTYP.o(from)
+    for to=0,CTYPi-1 { tos=CTYP.o(to)
+      for d=0,colr if(pmat[from][to][d]>0) for sy=0,STYPi-1 if(wmat[from][to][sy][d]>0) { sys=STYP.o(sy)
+        colnq[idx].append(froms.s,tos.s,sys.s,from,to,sy,wmat[from][to][sy][d],pmat[from][to][d],delm[from][to],deld[from][to],synloc[from][to],d)
+      }
+    }
+  }
+}
+
+//* setcellpos(col,vector of z values by type[,z variance,pseed,columndiameter in microns])
+proc setcellpos () { local i,z,x,y,zvar,c,ctyp,zmin,zmax localobj rdm,vz
+  col=$o1
+  vz=$o2 
+  if(numarg()>1) zvar=$3 
+  if(numarg()>2) pseed=$4
+  if(numarg()>3) cside=$5
+  {rdm=new Random() rdm.ACG(pseed)}
+  c=-1
+  if(col.cellsnq!=nil) c=col.cellsnq.fi("xloc")
+  for i=0,col.allcells-1 {
+    ctyp = col.ce.o(i).type
+    // If L2/3 cell...
+    if ((ctyp == E2) || (ctyp == I2) || (ctyp == I2L)) {
+      zmin = 143.0  // L2/3 upper bound (microns)
+      zmax = 451.8  // L2/3 lower bound (microns)
+    // Else, if L5 corticostriatal cell (goes in 5A or 5B)...
+    } else if (ctyp == E5R) {
+      zmin = 451.8   // L5A upper bound (microns)
+      zmax = 1059.0  // L5B lower bound (microns)
+    // Else, if L5 corticospinal cell (goes in 5B)...
+    } else if (ctyp == E5B) {
+      zmin = 663.6   // L5B upper bound (microns)
+      zmax = 1059.0  // L5B lower bound (microns)
+    // Else, if L5 interneuron (goes in 5A or 5B)...
+    } else if ((ctyp == I5) || (ctyp == I5L)) {
+      zmin = 451.8   // L5A upper bound (microns)
+      zmax = 1059.0  // L5B lower bound (microns)
+    // If L6 cell...
+    } else if ((ctyp == E6) || (ctyp == I6) || (ctyp == I6L)) {
+      zmin = 1059.0  // L6 upper bound (microns) 
+      zmax = 1412.0  // L6 lower bound, white-matter (microns)
+    }
+
+    col.ce.o(i).xloc=x=rdm.uniform(0,cside)
+    col.ce.o(i).yloc=y=rdm.uniform(0,cside)  
+    col.ce.o(i).zloc=z=rdm.uniform(zmin,zmax)
+    if(c!=-1) {
+      col.cellsnq.v[c+0].x(i)=x
+      col.cellsnq.v[c+1].x(i)=y
+      col.cellsnq.v[c+2].x(i)=z
+    }
+  }
+}
+
+//* reweightL2toL5() - reweight the E2->layer 5 connections
+proc reweightL2toL5 () { local a,L2toL5_EE_wmat_scale,L2toL5_EI_wmat_scale, ii,jj,prid,poid,prty,poty,ic1,ic2,wtchanged \
+  localobj col,ce,vidx,vdel,vwt1,vwt2,ign1,ign2,opr,opo,st,rdm
+
+  // Set the scaling parameters to scale the data from Figure 3F of the (Apicella et al., 2012).
+  L2toL5_EE_wmat_scale = 0.1 / EEGain // 0.023
+  L2toL5_EI_wmat_scale = 0.1 / EIGain // 0.0048
+
+  // Allocate vectors.
+  a = allocvecs(vidx,vdel,vwt1,vwt2,ign1,ign2) 
+
+  // Read the function arguments.
+  col = $o1 
+  ce = col.ce 
+
+  // If we have a connections NQS table, set its verbosity off.
+  if (col.mknetnqss) col.connsnq.verbose = 0
+
+  // Loop over all cells in the column...
+  for ii=0,ce.count-1 { 
+    // Set this as the pre-synaptic cell.
+    opr = ce.o(ii)
+
+    // Get pre-synaptic values.
+	 prid = opr.id 
+    prty = opr.type 
+    ic1 = ice(opr.type)
+
+    // Initialize the weight to not changed.
+    wtchanged = 0
+
+    // If the pre-synaptic type is E2...
+    if (prty == E2) {
+      // Get the divergence information for the pre-synaptic cell.
+      opr.getdvi(vidx,vdel,ign1,vwt1,vwt2,ign2)
+
+      // Loop over all of the post-synaptic cells...
+      for jj=0,vidx.size-1 {
+        // Get post-synaptic values.
+        opo = ce.o(vidx.x(jj))
+        poid = opo.id
+        poty = opo.type
+        ic2 = ice(opo.type)
+
+        // Deal with the E2->E5R (corticostriatal) case.
+        if (poty == E5R) {
+          // If the E5R cell is in layer 5A...
+          if (opo.zloc < 663.6) {
+            if ((opr.zloc >= 143.0) && (opr.zloc < 250.0)) {
+              vwt1.x(jj) = 25.6 * L2toL5_EE_wmat_scale * EEGain
+            } else if ((opr.zloc >= 250.0) && (opr.zloc < 350.0)) {
+              vwt1.x(jj) = 14.2 * L2toL5_EE_wmat_scale * EEGain
+            } else if ((opr.zloc >= 350.0) && (opr.zloc < 451.8)) {
+              vwt1.x(jj) = 6.8 * L2toL5_EE_wmat_scale * EEGain
+            }
+          // Else (if layer 5B), the weight is zero.
+          } else {
+            vwt1.x(jj) = 0.0
+          }
+
+          // Set the secondary weight (NMDA) to 0.1 * AMPA weight.
+          vwt2.x(jj) = vwt1.x(jj) * 0.1
+
+          // Set the weight to changed.
+          wtchanged = 1
+        }
+
+        // Deal with the E2->E5B (corticospinal) case.
+        if (poty == E5B) {
+          if ((opr.zloc >= 143.0) && (opr.zloc < 250.0)) {
+            vwt1.x(jj) = 32.6 * L2toL5_EE_wmat_scale * EEGain
+          } else if ((opr.zloc >= 250.0) && (opr.zloc < 350.0)) {
+            vwt1.x(jj) = 33.7 * L2toL5_EE_wmat_scale * EEGain
+          } else if ((opr.zloc >= 350.0) && (opr.zloc < 451.8)) {
+            vwt1.x(jj) = 21.2 * L2toL5_EE_wmat_scale * EEGain
+          }
+
+          // Set the secondary weight (NMDA) to 0.1 * AMPA weight.
+          vwt2.x(jj) = vwt1.x(jj) * 0.1
+
+          // Set the weight to changed.
+          wtchanged = 1
+        }
+
+        // Deal with the E2->I5L (layer 5A and 5B LTS) cases.
+        if (poty == I5L) {
+          if ((opr.zloc >= 143.0) && (opr.zloc < 250.0)) {
+            // If the I5L cell is in layer 5A...
+            if (opo.zloc < 663.6) {
+              vwt1.x(jj) = 40.2 * L2toL5_EI_wmat_scale * EIGain
+            // Else, if layer 5B...
+            } else {
+              vwt1.x(jj) = 40.2 * L2toL5_EI_wmat_scale * EIGain
+            }
+          } else if ((opr.zloc >= 250.0) && (opr.zloc < 350.0)) {
+            // If the I5L cell is in layer 5A...
+            if (opo.zloc < 663.6) {
+              vwt1.x(jj) = 36.3 * L2toL5_EI_wmat_scale * EIGain
+            // Else, if layer 5B...
+            } else {
+              vwt1.x(jj) = 14.2 * L2toL5_EI_wmat_scale * EIGain
+            }
+          } else if ((opr.zloc >= 350.0) && (opr.zloc < 451.8)) {
+            // If the I5L cell is in layer 5A...
+            if (opo.zloc < 663.6) {
+              vwt1.x(jj) = 18.7 * L2toL5_EI_wmat_scale * EIGain
+            // Else, if layer 5B...
+            } else {
+              vwt1.x(jj) = 5.3 * L2toL5_EI_wmat_scale * EIGain
+            }
+          }
+
+          // Set the secondary weight (NMDA) to 0.1 * AMPA weight.
+          vwt2.x(jj) = vwt1.x(jj) * 0.1
+
+          // Set the weight to changed.
+          wtchanged = 1
+        }
+
+        // If the weight has changed and we have a connectivity NQS...
+        if ((wtchanged) && (col.mknetnqss)) {
+          // Change the weights to the new values.
+          {col.connsnq.select("id1",prid,"id2",poid)}
+          {col.connsnq.fill("wt1",vwt1.x(jj))}
+          {col.connsnq.fill("wt2",vwt2.x(jj))}
+          {col.connsnq.delect()}
+        }
+      } // for loop over all post-synaptic cells
+
+      // Reset the divergent weights.
+      opr.setsywv(vwt1,vwt2)
+    } // if pre-synaptic type E2
+  } // for loop over all cells
+
+  // If we have a connections NQS table, set its verbosity back.
+  if (col.mknetnqss) col.connsnq.verbose = 1
+
+  // Deallocate vectors.
+  dealloc(a)
+}
+
+//** selectconns () - select conns from connsnq based on pre- and post-synaptic type filter
+proc selectconns () { local a,ii,prty,poty,prtarg,potarg localobj ridx,v1,thecol
+  thecol = $o1
+
+  // Allocate temporary vectors.
+  a = allocvecs(ridx,v1)
+
+  prtarg = $2
+  potarg = $3
+
+  // Start with an empty index list.
+  ridx.resize(0)
+
+  // Loop over all rows of connsnq
+  for ii=0,thecol.connsnq.size-1 {
+    v1 = thecol.connsnq.getrow(ii)
+    prty = thecol.ce.o(v1.x(0)).type
+    poty = thecol.ce.o(v1.x(1)).type   
+
+    // Include only the rows that match the valid cases.
+    if ((prty == prtarg) && (poty == potarg)) {
+      ridx.append(ii)
+    }
+  }
+
+  // Select the rows with for the ridx rows.
+  thecol.connsnq.select("IND_",EQW,ridx)
+
+  // Deallocate the temporary vectors.
+  dealloc(a)
+} 
+
+// <-- stccol
+//** swirecut (col,EEsq,EIsq,IEsq,IIsq[,seed,slambda]) - spatial wiring: wires the column using pmat and cell positions
+//                   (wiring probability effected by distance btwn cells)
+// seed is random # seed
+// lambda specifies length-constant for spatially-dependent fall-off in wiring probability
+// at one lambda away, probability of connect is value in pmat
+// CK: WARNING, this function has been kludgily rewritten to have no distance of constant connectivity!
+proc swirecut() { local x,y,z,ii,jj,a,del,prid,poid,prty,poty,dv,lseed,h,prob,slambda,dsq,dist,slambdasq,\
+                  EEsq,EIsq,IEsq,IIsq,ic1,ic2,pdx\
+               localobj col,ce,vidx,vdel,vdist,vwt1,vwt2,vtmp,opr,opo,st,rdm,vprob
+  // Allocate vectors.
+  a=allocvecs(vidx,vdel,vtmp,vdist,vwt1,vwt2,vprob) 
+
+  z=0
+
+  // Read the function arguments.
+  col=$o1 ce=col.ce EEsq=$2 EIsq=$3 IEsq=$4 IIsq=$5
+  if (argtype(6)==0) lseed=$6 else lseed=1234  
+  if(numarg()>6) slambda=$7 else slambda=10
+  if(slambda<=0){
+    printf("swirecut WARN: invalid slambda=%g, setting slambda to %g\n",colside/3)
+    slambda=colside/3
+  }
+  slambdasq = slambda^2 // using squared distance
+
+  // Set up connectivity vectors.
+  vrsz(1e4,vidx,vdel,vdist,vtmp)
+
+  // Set up random number stuff.
+  hashseed_stats(lseed,lseed,lseed)
+  rdm=new Random() rdm.ACG(lseed) // initdivrnd(lseed)//initialize random # generator
+  rdm.uniform(0,1) vprob.resize(ce.count^2) vprob.setrand(rdm) pdx=0
+
+  // Create the connectivity NQS table.
+  if(col.mknetnqss) {nqsdel(col.connsnq) col.connsnq=new NQS("id1","id2","del","dist","wt1","wt2")}
+
+  // Loop over all cells in the column as pre-synaptic cells...
+  for y=0,ce.count-1 { opr=ce.o(y)
+   // Start with empty connection vectors.
+	vrsz(0,vidx,vdel,vdist,vwt1,vwt2)
+
+   // Get pre-synaptic values.
+	prid=opr.id prty=opr.type ic1=ice(opr.type)
+
+   // For all post-synaptic types where there are cells there that need connecting to
+   // (set h to pmat value for that pr->po)...
+	for poty=0,CTYPi-1 if (col.numc[poty]!=0 && (h=col.pmat[prty][poty])>0) {
+     // For all of the post-synaptic cells (assuming not same as pre-synaptic cell)...
+	  for poid=col.ix[poty],col.ixe[poty] if(prid!=poid) {
+       // Get post-synaptic cell values.
+	    opo = ce.o(poid) ic2=ice(ce.o(poid).type)
+
+       // Get the x,y, and z distances.
+	    dx = opr.xloc - opo.xloc
+	    dy = opr.yloc - opo.yloc
+	    dz = opr.zloc - opo.zloc
+
+       // Get the square of the x,y distance.
+	    dsq = dx^2 + dy^2  // Connectivity fall-off only depends in intra-layer distance
+
+       // Get the Euclidean x,y,z distance.
+	    ds = sqrt(dx^2 + dy^2 + dz^2) // Axonal delay depends on all quantities
+
+       // Get probability of connection (pmat value at x,y distance 0, scaled * 0.368 when slambda = dist)
+	    prob = h * exp(-sqrt(dsq)/slambda) // probability of connect
+
+       // If the random connection is to be made...
+	    if( prob >= vprob.x(pdx) ) { // rdm.uniform(0,1)
+         // Set the axonal delay using the x,y,z distance and random values.
+	      del = delmscalemod*(rdm.uniform(col.delm[prty][poty]-col.deld[prty][poty],col.delm[prty][poty]+col.deld[prty][poty])+ds/axonalvelocity) // Include both synaptic and axonal delays (ds/axonalvelocity is axonal)
+
+         // Add the post-synaptic cell ID and the delay.
+	      {vidx.append(poid)          vdel.append(del)}
+
+         // Add the distance value (dendrite vs. soma).
+	      if(synloc[prty][poty]==DEND) vdist.append(1) else vdist.append(0)
+
+         // Add primary and secondary weights, if appropriate to do so.
+	      if(col.mknetnqss || wsetting_INTF6==1) {
+	        if(col.syty1[prty][poty]>=0) vwt1.append(col.wmat[prty][poty][col.syty1[prty][poty]]) else vwt1.append(0)
+	        if(col.syty2[prty][poty]>=0) vwt2.append(col.wmat[prty][poty][col.syty2[prty][poty]]) else vwt2.append(0)
+	      }
+	    }
+	    pdx += 1
+	  } // for poid
+	} // for poty
+
+   // If there is more than one efferent connection...
+	if(vidx.size>0) {
+     // If we are working with individual synapses (vwt1,vwt2), use them.  Otherwise, set up normally.
+	  if(wsetting_INTF6==1) opr.setdvi(vidx,vdel,vdist,0,vwt1,vwt2) else opr.setdvi(vidx,vdel,vdist)
+
+     // If we are making NQSs, add the new connections to connsnq.
+	  if(col.mknetnqss) {
+	    for ii=0,vidx.size-1 col.connsnq.append(prid,vidx.x(ii),vdel.x(ii),vdist.x(ii),vwt1.x(ii),vwt2.x(ii))
+	  }
+	}
+  } // for all (pre-synaptic) cells
+
+  // Deallocate vectors.
+  dealloc(a)
+
+  if(verbose) printf("\n")
+}
+
+
+//* checkerpos - arrange cells in checkerboard pattern
+proc checkerpos () { local i,j,x,y,xn,yn,csz,ssz,incsz,mnx,mxx,mny,mxy,a localobj col,ce,rdm,xo,vox,vex,voy,vey
+  col=$o1 csz=col.cdiam ssz=$2 incsz=$3 rdm=new Random() rdm.ACG($4)
+  ce=col.ce
+  a=allocvecs(vox,vex,voy,vey)
+
+  mxx=csz
+  if(mxx%2==1) mxx-=1
+  vex.indgen(0,mxx,2)
+  vey.indgen(0,mxx,2)  
+
+  mxx=csz
+  if(mxx%2==0) mxx-=1
+  vox.indgen(1,mxx,2)
+  voy.indgen(1,mxx,2)  
+
+  for ltr(xo,ce,&i) {
+    if(rdm.discunif(0,1)==0) {
+      x = vex.x(rdm.discunif(0,vex.size-1))
+      y = vey.x(rdm.discunif(0,vey.size-1))
+    } else {
+      x = vox.x(rdm.discunif(0,vox.size-1))
+      y = voy.x(rdm.discunif(0,voy.size-1))
+    }
+    mnx=MAXxy(x-1,0)
+    mxx=MINxy(x,csz)
+    if(mnx==mxx && mnx==0) {
+      mnx+=1 mxx+=2
+    }
+    mny=MAXxy(y-1,0)
+    mxy=MINxy(y,csz)
+    if(mny==mxy && mny==0) {
+      mny+=1 mxy+=2
+    }
+    xn = rdm.uniform(mnx,mxx)
+    yn = rdm.uniform(mny,mxy)
+    xo.xloc=xn
+    xo.yloc=yn
+    if(col.cellsnq!=nil) {
+      col.cellsnq.v[5].x(i) = xo.xloc
+      col.cellsnq.v[6].x(i) = xo.yloc
+    }
+  }
+}
+// stccol -->
+
+//* mkcols - make the COLUMNs
+proc mkcols () { local id,x,y,seed localobj nq
+  id=0
+  for y=0,colH-1 for x=0,colW-1 {
+    if(dbgcols)seed=dvseed else seed=(id+1)*dvseed
+    lcol.append(gcol[y][x]=new COLUMN(id,vcpercol,colnq,seed,x,y,setdviPT,mknetnqss,1))
+    col[id]=gcol[y][x]
+    col[id].verbose=verbose_INTF6
+	// <-- stccol 
+	if(strlen(wnqstr)>0) { // wire from NQS
+      nq=new NQS(wnqstr)
+      col[id].wirenq(nq)
+      nqsdel(nq)
+    } else if(swire>0) { // spatial-wiring
+//      col[id].setcellpos(vlayerz,layerzvar,pseed*(id+1),colside)
+      setcellpos(col[id],vlayerz,layerzvar,pseed*(id+1),colside)  // use Gordon cell version
+      if(checkers) checkerpos(col[id],1,1,pseed*(id+1))
+      if(swire==1) {
+        col[id].swire(col[id].wseed,maxsfall)
+      } else if(swire==2) {
+      	swirecut(col[id],EEsq,EIsq,IEsq,IIsq,col[id].wseed,slambda) // Don't read from disk, calculate
+      }
+    } else {
+      setcellpos(col[id],vlayerz,layerzvar,pseed*(id+1),colside)  // use Gordon cell version
+      col[id].wire(col[id].wseed) // random wiring (no spatial dependence)
+      reweightL2toL5(col[id])
+    }
+	// stccol -->
+    id+=1
+  }
+}
+
+//* wirecols - setup inter-COLUMN connectivity with NetCon
+proc wirecols () { local x1,y1,x2,y2,dx,dy,maxd,d localobj fromc,toc
+  if(numarg()>0) d=$1 else d=colr
+  if(torus) { // wraparound
+    //alternate coordinates: ( -colW+x   ,  -colH+y )
+    //alternate system: -5  -4  -3  -2  -1
+    //original system:   0   1   2   3   4
+    //layed out as a line: -5  -4  -3  -2  -1  0   1   2   3   4
+    //only need to compare in normal system, and 1 alternate coordinate vs original (and vice versa)
+    for y1=0,colH-1 for x1=0,colW-1 for y2=0,colH-1 for x2=0,colW-1 {
+      if(y1==y2 && x1==x2) continue // skip self-self    
+      dx=MINxy(abs(x1-x2), MINxy(abs((-colW+x1)-x2), abs(x1-(-colW+x2))) )
+      dy=MINxy(abs(y1-y2), MINxy(abs((-colH+y1)-y2), abs(y1-(-colH+y2))) )
+      if((maxd=MAXxy(dx,dy)) > d) continue // skip too far
+      gcol[y1][x1].wire2col(gcol[y2][x2],colnq,maxd,ncl) // unidirectional wiring
+    }
+  } else { // no wrap-around
+    for y1=0,colH-1 for x1=0,colW-1 for y2=0,colH-1 for x2=0,colW-1 {
+      if(y1==y2 && x1==x2) continue // skip self-self    
+      if((maxd=MAXxy(abs(x1-x2),abs(y1-y2))) > d) continue // skip too far
+      gcol[y1][x1].wire2col(gcol[y2][x2],colnq,maxd,ncl) // unidirectional wiring
+    }
+  }
+}
+
+//* intercoloff - turn off all weights between COLUMNs
+proc intercoloff () { local i localobj xo
+  for ltr(xo,ncl) if(isojt(xo.pre,col.ce.o(0)) && isojt(xo.syn,col.ce.o(0))) {
+    for i=0,6 xo.weight(i)=0
+  }
+}
+
+// <-- stccol
+//* intercolmul(from,to,sy,w)
+proc intercolsyw () { local from,to,sy,w localobj xo
+  from=$1 to=$2 sy=$3 w=$4
+  for ltr(xo,ncl) if(isojt(xo.pre,col.ce.o(0)) && isojt(xo.syn,col.ce.o(0))) {
+    if(xo.pre.type==from && xo.syn.type==to) xo.weight(sy)=w
+  }
+}
+// stccol -->
+
+//* function calls to setup network
+
+//** z location of each layer in microns
+mkvlayerz()
+
+//** # of cells per column
+setcpercol() //new numbers (10aug30)
+
+//** setup pmat
+if(name_declared("nqpmat")==2) { // read pmat from NQS if available, else set to default
+  if(nqpmat!=nil) nq2pmat(nqpmat) else setpmat()
+} else setpmat()
+if(pmatscale!=1) scalepmat(pmatscale)
+
+//** setup synapse locations,delays,wmat
+setsynloc()
+setdelmats()
+setwmat() // new KMJ version
+
+scrsz=50*1e3
+double scr[scrsz]
+
+//** make cells, columns, wire columns
+print "Making cells..."
+mkcolnqs(wmatscale) // Argument is the scale factor for the weight matrix
+print "Making columns..."
+mkcols()
+if (loadsaveconnectivity==2) { // Save connectivity matrix
+	print "Saving connectivity NQS table..."
+	col.connsnq.sv("connectivity.nqs") // Save connectivity NQS to disk
+	print "...done...."
+}
+print "Wiring columns..."
+wirecols(1)
+print "...done..."
+
+// <-- stccol
+//** leftover code from tvis - may use at some point
+//*** delm setup -- mean delays
+proc ae () {
+  //**** horizontal intralaminar mean delays
+  delm[E2][E2] = 0.4
+  delm[E2][I2] = 0.4
+
+  delm[E5R][E5R] = 0.4
+  delm[E5R][I5] = 0.4
+
+  delm[E6][E6] = 0.4
+  delm[E6][I6] = 0.4
+
+  //**** vertical interlaminar mean delays
+  delm[E2][E5R] = 1.4
+  delm[E2][I5] = 1.4
+
+  delm[E2][E6] = 1.8
+  delm[E2][I6] = 1.8
+
+  delm[E5R][E2] = 1.4
+  delm[E5R][I2] = 1.4
+
+  delm[E5R][E6] = 1.25
+  delm[E5R][I6] = 1.25
+
+  delm[E6][E5R] = 1.85
+  delm[E6][I5] = 1.85
+
+  //**** intracortical inhibitory mean delays
+  delm[I2][E2] = 0.4
+  delm[I2][I2] = 0.4
+
+  delm[I5][E5R] = 0.4
+  delm[I5][I5] = 0.4
+
+  delm[I6][E6] = 0.4
+  delm[I6][I6] = 0.4
+  //
+}
+
+//*** dels setup -- stdev of delays
+proc ae () {
+  //**** horizontal intralaminar stdev of delay
+  dels[E2][E2] = 0.1
+  dels[E2][I2] = 0.1
+
+  dels[E5R][E5R] = 0.1
+  dels[E5R][E5R] = 0.1
+  dels[E5R][I5] = 0.1
+
+  dels[E6][E6] = 0.1
+  dels[E6][I6] = 0.1
+
+  //**** vertical interlaminar stdev of delay
+  dels[E2][E5R] = 0.25
+  dels[E2][I5] = 0.25
+
+  dels[E2][E6] = 0.25
+  dels[E2][I6] = 0.25
+
+  dels[E5R][E2] = 0.25
+  dels[E5R][I2] = 0.25
+
+  dels[E5R][E6] = 0.25
+  dels[E5R][I6] = 0.25
+
+  dels[E6][E5R] = 0.25
+  dels[E6][I5] = 0.25
+
+  //**** intracortical inhibitory stdev of delay
+  dels[I2][E2] = 0.1
+  dels[I2][I2] = 0.1
+
+  dels[I5][E5R] = 0.1
+  dels[I5][I5] = 0.1
+
+  dels[I6][E6] = 0.1
+  dels[I6][I6] = 0.1
+  //
+  from=to=0 //set delay variance
+  for ctt(&from) for ctt(&to) if(dels[from][to]) delv[from][to]=dels[from][to]^2
+}
+// stccol -->

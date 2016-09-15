@@ -1,0 +1,62 @@
+// SAVEWEIGHTS
+// This code saves the weights of a sampling of 
+// synapses at regular intervals. It's based on arm.hoc.
+// Version: 2012jun23
+
+timebetweensaves=0.5 // Interval between saves, in s
+
+//* savesynapticweights - save synaptic weights from L5 cells
+objref nqsy
+nqsy=new NQS("id1","id2","wg","t")
+proc savesynapticweights () { local i,a localobj xo,vwg,vtau,vinc,vmaxw,vidx,vt,vpre
+  a=allocvecs(vidx,vwg,vtau,vinc,vmaxw,vt,vpre)
+  for ltr(xo,col[0].ce) {
+      vrsz(xo.getdvi(vidx),vwg,vtau,vinc,vmaxw,vt,vpre)
+      xo.getplast(vwg,vtau,vinc,vmaxw) // get current weight gains    
+      vt.fill(t) //time
+      vpre.fill(xo.id) //presynaptic id
+      nqsy.v[0].append(vpre) 
+      nqsy.v[1].append(vidx)
+      nqsy.v[2].append(vwg)
+      nqsy.v[3].append(vt)
+  }
+  dealloc(a)
+}
+
+// Initialize all the events; one save per second
+proc periodicweightsave() { local sec
+	for thissave=0,int(mytstop/timebetweensaves/1000)-1 cvode.event(thissave*timebetweensaves*1000,"savesynapticweights()")
+}
+
+// Set up actual events to happen
+objref weightshandler
+weightshandler = new FInitializeHandler(1,"periodicweightsave()")
+
+// Procedure for saving weights to disk. Based on code from saveoutput.hoc.
+strdef outfnweights
+sprint(outfnweights,"%s-wts.txt",filestem) // Store the connectivity information
+proc writeweightstodisk() { local i,j localobj conpreid, conpostid, conweight, contime, dynamicweights, fobjweights
+	// For saving cell connectivity
+	print "Saving dynamic connectivity..."
+	conpreid=nqsy.getcol("id1")
+	conpostid=nqsy.getcol("id2")
+	conweight=nqsy.getcol("wg")
+	contime=nqsy.getcol("t")
+	// Initialize array
+	n = conpreid.size()
+	print "  Number of connections: ", n
+	dynamicweights = new Matrix(n,4) // PreID, post ID, weight, time
+	for i=0,n-1 { // Loop over each synapse
+		dynamicweights.x[i][0]=contime.x[i]
+		dynamicweights.x[i][1]=conpreid.x[i]
+		dynamicweights.x[i][2]=conpostid.x[i]
+		dynamicweights.x[i][3]=conweight.x[i]
+		}
+	// Save results to disk in text format
+	print "  Saving to file..."
+	fobjweights = new File(outfnweights)
+	fobjweights.wopen()
+	dynamicweights.fprint(0,fobjweights,"%8.2f") // Not sure how many sig figs to have
+	fobjweights.close()
+	print "  ...done..."
+}

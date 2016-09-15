@@ -1,0 +1,152 @@
+// $Id: updown.hoc,v 1.116 2010/09/09 15:56:12 samn Exp $
+
+print "Loading updown.hoc..."
+
+printStep=0.1
+CREEP_UPDOWN=1
+NOV_UPDOWN=1
+
+{declare("test_do_graphs", 1)}
+{declare("drawlr", 1, "drawth", 1,"drawscale",0,"shapesz",15,"flipit",0)}
+{declare("minthreshlx", 0, "maxthreshlx",9e3*printStep)}
+{declare("black",1,"red",2,"blue",3,"green",4)}
+
+// EXAMPLE USAGE
+// {gvnew(-2) panobj.read_vfile("/u/billl/nrniv/sync/data/05nov02.501/v05nov02.1000")}
+// panobj.rv(7)
+// vec.copy(panobj.vrtmp)
+// vec.mul(-1)
+// gg(vec,printStep)
+// objref output
+// output=updown(vec)
+// output.pr(10)
+
+// updown(vec[,nq,#CUTS,LOGCUT,MIN]) -- use updown() to find spikes
+// LOC(0) PEAK(1) WIDTH(2) BASE(3) HEIGHT(4) START(5) SLICES(6) SHARP(7) INDEX(8) FILE(9)
+// other options
+pos_updown=1 // set to 1 to move whole curve up above 0
+maxp_updown=0.95 // draw top sample at 95% of max 
+minp_updown=0.05 // draw bottom sample at 5% of max
+over_updown=1    // turn over and try again if nothing found
+allover_updown=0 // turn over and add these locs (not debugged)
+verbose_updown=0 // give messages, can also turn on DEBUG_VECST for messages from updn()
+{declare("dynamic_th",0)}
+
+//** updown - calls Vector updown function and returns NQS with spikes/bumps
+obfunc updown () { local a,ii,npts,logflag,min,x,sz,midp localobj bq,cq,v1,v2,v3,bb,tl,vtmp
+  if (verbose_updown) printf("MAXTIME appears to be %g (printStep=%g)\n",$o1.size*printStep,printStep)
+  npts=10 // n sample locations
+  tl=new List()
+  bq=new NQS("LOC","PEAK","WIDTH","BASE","HEIGHT","START","SLICES","SHARP","INDEX","FILE","NESTED") 
+  if (numarg()>1) cq=$o2 else cq=new NQS()
+  if (cq.m!=10) { cq.resize(0) 
+    cq.resize("LOC","PEAK","WIDTH","BASE","HEIGHT","START","SLICES","SHARP","INDEX","FILE","NESTED") }
+  if (numarg()>2) npts=$3
+  if (numarg()>3) logflag=$4 else logflag=0
+  if (numarg()>4) {
+    if (npts!=$o5.size) printf("Correcting npts from %d to %d\n",npts,npts=$o5.size)
+    if ($o5.ismono(1)) $o5.reverse
+    if (! $o5.ismono(-1)) {printf("updown: Arg 5 (%s) must be monotonic\n",$o5) return}
+  }
+//  if (numarg()>5) dynflag=$6 else dynflag=0
+
+  bq.listvecs(bb)
+  bq.pad(5000)
+  a=allocvecs(npts+3,2e4)
+  v1=mso[a+0] v2=mso[a+1] v3=mso[a+2]
+  for ii=0,npts-1 tl.append(mso[ii+a+3])
+  v1.copy($o1)
+  if (pos_updown) {
+    min=v1.min
+    v1.sub(min) // make it uniformly positive
+  } else min=0
+  if (numarg()>4) v2.copy($o5) else {
+    if(logflag==2){ //"double-log" spacing
+
+      midp = v1.max * 0.5 //50% of max is center of log axis in vertical direction
+
+      // 1/2 of lines btwn max and midpoint
+      vtmp=new Vector()
+      vtmp.indgen(2,2+npts/2-1,1)
+      vtmp.log()
+      vtmp.scale(maxp_updown*v1.max,midp)
+
+      v2.append(vtmp)
+
+      // 1/2 of lines btwn min and midpoint
+      vtmp.indgen(2,2+npts/2-1,1)
+      vtmp.log()
+      vtmp.scale(minp_updown*v1.max,midp)
+
+      v2.append(vtmp)
+
+      //make sure they're monotonically increasing
+      v2.sort()
+      v2.reverse()
+
+    } else {
+      v2.indgen(2,2+npts-1,1)   // sampling at npts points, start at 2 to avoid log(1)=0
+      if (logflag) v2.log() // log sampling
+      v2.scale(-maxp_updown*v1.max,-minp_updown*v1.max) v2.mul(-1)
+    }
+  }
+
+  if(dynamic_th) { //allocate memory so updown can use th
+    v2.resize(v1.max()+1)
+    v2.resize(0)
+    printf("dynamic_th\n")
+  }
+
+  vec0.copy(v2) // <--------- whats this for? copies threshold lines to global vec0
+
+  //v2 = thresh
+  v1.updown(v2,tl,bb)
+
+  if (pos_updown) { bq.v[1].add(min) bq.v[3].add(min) }
+  cq.append(bq)
+  sz=bq.size(1)
+  if (allover_updown) { // do it upside down as well
+    v1.mul(-1) // v2 will be upside-down
+    if (pos_updown) {min=v1.min v1.sub(min)}
+    v1.updown(v2,tl,bb)
+    bq.v[8].add(sz) bq.v[4].mul(-1) // turn HEIGHT upside down
+    cq.append(bq)
+  } else if (over_updown && sz==0) { // turn it over an try again
+    print "updown() checking upside-down"
+    v1.mul(-1) // v2 will be upside-down
+    v1.updown(v2,tl,bb)
+  } 
+  for case(&x,0,2,5) cq.v[x].mul(printStep)
+  nqsdel(bq)
+  dealloc(a)
+  return cq
+}
+
+//** testupdown($o1=input vector,$2=num slices,$3=logarithmic-spaced slices,$o4=thresholds slices locations)
+// runs updown on input vector and returns an NQS with detected spikes/bumps
+obfunc testupdown (){ local idx,left,right,x,a localobj vtmp,output,vec
+  {a=allocvecs(vec) output = new NQS() vec.copy($o1)}
+  if(flipit) vec.mul(-1)
+  vec.sub(vec.min)
+  if(numarg()>3){
+    updown(vec,output,$2,$3,$o4)
+  } else if(numarg()>2){
+    updown(vec,output,$2,$3)
+  } else{
+    updown(vec,output)
+  }
+  if(test_do_graphs){ if(g==nil) gg()
+    gg(vec,printStep,black,3) //5 is for thick lines       
+    output.v[1].mark(g,output.v,"o",shapesz,red,1) //draw circles at top of peaks
+    if(drawlr) for(idx=0;idx<output.v.size;idx+=1){
+      left = output.v[5].x(idx)
+      right = left+output.v[2].x(idx)
+      g.mark(left, vec.x(left/printStep), "t",shapesz,blue ,1)
+      g.mark(right,vec.x(right/printStep),"s",shapesz,green,1)
+    }       
+     // draw horizontal lines for slices
+    if(drawth) for vtr(&x,vec0) drline(minthreshlx,x,maxthreshlx,x,red,1)
+  } 
+  dealloc(a)
+  return output
+}

@@ -1,0 +1,369 @@
+// $Id: run.hoc,v 1.53 2010/09/19 19:29:07 samn Exp $
+
+print "Loading run.hoc..."
+
+objref wf1,wf2,wrec
+{sprint(tstr,"o[%d]",numcols)}
+{declare("vit",tstr,"nqLFP",tstr,"SPKSZ",25e6*tstop/20e3)}
+
+{method("CN",1)} // CK: use Crank-Nicholson integration; 2nd argument specifies timestep; 1 ms seems fine surprisingly
+{cvode.atol(1e-3)}
+{cvode.condition_order(1)} // irrelevant to acells?
+{declare("sepflds",1)} // whether to record separate fields for each layer @@@ CK: Yes, please do!
+
+//** draw lines between cell subpopulations
+proc rasterlines () { localobj o
+  g=graphItem
+  for ct=0,CTYPi-1 if(col.numc[ct]) {
+    drline(0,col.ixe[ct],mytstop,col.ixe[ct],g,2,6)
+    // o=mdl2view(g,0,ix[ii]+numc[ii]/10)
+    o=mdl2view(g,0.9,col.ix[ct]+col.numc[ct]/4)
+    g.label(0.9,o.x[3],CTYP.o(ct).s)
+  }
+  g.flush
+}
+//** calls rasterlines, making sure g is set first
+proc grlines () { 
+  {g=Graph[$1] rasterlines()}
+}
+
+proc a () { local sh,sv
+  if(g==nil)gg()
+  if (!isobj(aa,"Graph")) aa=g else g=aa
+  if (aa.view_count==0) aa=g
+  sv=gnum gnum=ojtnum(g)
+  graphItem=g
+  sh=0 grv_.super=1 g.erase_all
+  grv_.gveraseflag=0  grv_.gvmarkflag=grv_.super=1 // gnum=0
+  gv(0,1+sh,2) // gv(1,3+sh,2) gv(2,2+sh,2)
+  grv_.gvmarkflag=grv_.super=0
+  gnum=sv
+  rasterlines()
+}
+
+
+//** init - called @ start of run
+proc init () { 
+  initMisc1()
+  vseed_stats(392426)
+  finitialize() 
+  cvode.re_init()
+}
+
+//** initrr - for doing a rerun - not used right now
+proc initrr () { 
+  col.intf.global_init()
+  NStim[0].global_init()
+  vseed_stats(392426)
+}
+
+//** setMemb - nothing here
+proc setMemb () {}
+
+//** initMisc1 -- @@@ CK: replaced with version Sam sent me on 2011feb11
+proc initMisc1 () {
+  col.intf.global_init()
+  jrtm_INTF6=100 // Time step between updates
+  for i=0,numcols-1 col[i].cstim.initrands()
+}
+
+objref ww // global ww for post processing
+{wwht_INTF6=1 wwwid_INTF6=100}
+//** wrecon - setup LFP recording, one LFP for each COLUMN
+proc wrecon () { local cdx,ii,x,ct,cnt localobj tl,vm
+  tl=new List()
+  for cdx=0,numcols-1 {
+    {nqsdel(nqLFP[cdx])}
+    if(sepflds) nqLFP[cdx]=new NQS("E2","E4","E5","E6","LFP") else {nqLFP[cdx]=new NQS(1) nqLFP[cdx].s[0].s="LFP"}
+    {nqLFP[cdx].v.resize(tstop/vdt_INTF6) nqLFP[cdx].pad()}
+    for ii=0,nqLFP[cdx].m-1 tl.append(nqLFP[cdx].v[ii])
+  }
+  {vm=new Vector(CTYPi) vm.x(E2)=0 vm.x(E4)=1 vm.x(E5R)=vm.x(E5B)=2 vm.x(E6)=3}
+  col.intf.initwrec(tl)
+  for x=0,numcols-1 {
+    for case(&ct,E2,E4,E5R,E5B,E6) {
+      for ii=col[x].ix[ct],col[x].ixe[ct] {
+        if(sepflds) {
+          col[x].ce.o(ii).wrc(vm.x(ct)+x*5)
+          col[x].ce.o(ii).wrc(4+x*5)
+        } else col[x].ce.o(ii).wrc(x)
+      }
+    }
+  }
+}
+
+//** wrecoff - turn off LFP recording
+proc wrecoff () { local ct
+  for ctt(&ct) for ixt(ct) XO.wrec(0)
+}
+
+//** finishMisc - called @ end of run()
+func finishMisc () { local ii localobj co
+  for ltr(XO,printlist) if (isassigned(XO.o)) if (XO.o.fflag) XO.o.fini
+  // if(0) panobj.pvplist(ofile,params,100) //dont save printlist for now
+  col.intf.global_fini
+  for ltr(co,lcol) co.intf.spkstats2(1)
+  print "TMAX: ",tmax_INTF6
+  return 1
+}
+
+//** snapsv() save after printlist items min-max to fixed dt
+proc snapsv () { local a,vdt,min,max localobj v1,o
+  grv_.bst(3,3)
+  vdt=0.2 
+  a=allocvecs(v1)
+  v1.resize(tstop/vdt)
+  for ltr(o,printlist) { 
+    if (o.code!=3) continue
+    v1.snap(o.vec,o.tvec,vdt)
+    o.vec.copy(v1)
+    o.pstep=vdt
+    o.tvflag=0
+  }
+  if (numarg()==0) grv_.pvall()
+  dealloc(a)
+}
+
+proc exeruncall () { for ltr(XO,printlist) if (XO.code==3) XO.tvflag=1 }
+proc pvout2 () { snapsv(1) }
+
+//printlist=new List()
+if(printlist==nil)printlist=new List()
+objref p
+p=printlist
+proc prlclr () { localobj ce,col,intf
+  for ltr(XO,printlist) {
+    if (isassigned(XO.o)) if (XO.o.fflag) XO.o.recclr
+  }
+  //  for ltr(XO,ce) XO.wrc(-1)
+  for ltr(col,lcol) {
+    {ce=col.ce intf=ce.o(0)}
+    for ii=0,ce.count-1 ce.o(ii).wrc(-1)
+    intf.wwfree(0)
+  }
+  printlist.remove_all
+}
+
+//** prl(recv,recs[,lvextra]) - setup recording in printlist
+//$1  = whether to record any cell voltages, default off
+//$2  = whether to record spike times, default on
+//$o3 = extra cells to record. lv.o(0)=cell,lv.o(1)=param to record,etc.,optional
+proc prl () { local a,x,cidx,ii,jj,offst,y,recv,recs,max localobj xo,lvextra,co,ce
+  if(numarg()>0) recv=$1 else recv=0
+  if(numarg()>1) recs=$2 else recs=1
+  if(numarg()>2) lvextra=$o3 else lvextra=nil
+  {offst=0 prlclr()}
+  for ltr(co,lcol,&ii) {
+    {ce=co.ce intf=co.intf}
+    if (recs) { sprint(tstr,"%s_SPKS",co.name)
+      if (intf.flag("jcn")) { // for use with jitcon()
+        printlist.append((vit[ii]=new vitem(tstr,SPKSZ,1)))
+        intf.jitrec(vit[ii].vec,vit[ii].tvec)
+      } else {
+        intf.jitrec() // clear jit recording
+        for ltr(xo,ce,&y) {
+          if (y==0) vit[ii]=new_printlist_nc(xo, xo.id, tstr) else {
+            new_printlist_nc2(vit[ii], xo, xo.id)        }
+        }
+      }
+    }
+    npacsz=20
+    if (recv && ce.count>0) {
+      if(numcols <= 1 || (co.xpos==int(colW/2) && co.ypos==int(colH/2))) for x=0,CTYPi-1 {      
+        if (co.numc[x]>0) max=0 else max=co.numc[x]-1
+        for jj=0,max {
+          XO=ce.object(co.ix[x]+jj)
+          XO.recclr
+          new_printlist_ac(XO,"V",  CTYP.o(x).s,XO.id)
+          // new_printlist_ac(XO,"VGB",  CTYP.o(x).s,XO.id)
+          // new_printlist_ac(XO,"VGA",  CTYP.o(x).s,XO.id)
+          // new_printlist_ac(XO,"AHP",  CTYP.o(x).s,XO.id)
+          //      printlist.o(printlist.count-1).code=3 // use code 3 for snapping
+          // XO=ce.object(ixe[x]-jj-1)
+          // XO.recclr
+          // new_printlist_ac(XO,"V",  CTYP.object(x).s,XO.id)
+        }
+      }
+    }
+    if(lvextra!=nil){
+      for(jj=0;jj<lvextra.count;jj+=2){ XO=lvextra.o(jj)
+        new_printlist_ac(XO,lvextra.o(jj+1).s,CTYP.object(ctyp(XO.id)).s,XO.id)
+      }
+    }
+  }
+  wrecon()
+}
+
+obfunc md5 () { localobj aq
+  batch_flag=1
+  if (numarg()>0) tstr=$s1 else tstr="aa"
+  aq=new NQS("t","i")   aq.scpflag=1 aq.setcols(p.o(0).tvec,p.o(0).vec)
+  aq.sort("i") aq.sort("t") aq.listvecs()
+  prveclist(tstr,aq.vl)
+  sprint(tstr,"md5sum %s",tstr) system(tstr)
+  batch_flag=0
+  return aq
+}
+
+//** rub() -- multi-run with saving to veclist
+// saves vspks(1), SM(2), SU(2), IN(2)
+proc rub () { local ii localobj so
+  so=new String()
+  clrveclist()
+  for ii=0,9 {
+    sprint(so.s,"%d",ii)
+    shuffle(vspks)
+    savevec(vspks)
+    time()
+    savevec(p.object(0).vec,p.object(0).tvec)
+    savevec(p.object(1).vec,p.object(1).tvec)
+    savevec(p.object(2).vec,p.object(2).tvec)
+  }
+}
+
+//** spri(#) puts up graph of just one class
+// 0->SM 1->SU 2->IN
+// map 0,1,2 onto 1,3,5 ii*2+1
+proc spri () { local ii,a,jj
+  a=allocvecs(1)  ge(0)
+  for ii=0,9 { jj=7*ii+$1*2+1
+    mso[a].copy(veclist.object(jj))
+    mso[a].add(1.5*ii*(mso[a].max-mso[a].min)-mso[a].min)
+    mso[a].mark(g,veclist.object(jj+1),"O",4,cg(ii))
+  }
+}
+//** sprj(#) puts up SM,SU,IN for 1 run (cp a() above)
+proc sprj () { local ii,jj
+  jj=7*$1+1
+  for ii=0,2 veclist.object(jj+ii*2).mark(g,veclist.object(jj+ii*2+1),"O",2,cg(ii))
+}
+ 
+flddur=celdur=1000
+splshhsz=0.4
+objref slicepictypes
+slicepictypes=new Vector()
+{slicepictypes.append(0,3,2)}
+stopoq_INTF6=1
+
+proc rer () { 
+  intf.resetall
+  prl()
+  shock()
+  srun()
+}
+
+proc turnoff () { local cel0,cel1,off
+  cel0=$1 cel1=$2
+  if (argtype(3)==0) off=$3 else off=0
+  ind.indgen(ix[cel0],ixe[cel0],1) vec.indgen(ix[cel1],ixe[cel1],1) 
+  intf.turnoff(ind,vec,off)
+}
+
+//** turn off intralaminar connections
+proc intralamoff () { local ct
+  for ctt(&ct) if(numc[ct] && div[ct][ct][0]) turnoff(ct,ct)
+}
+
+//** turn on intralaminar connections
+proc intralamon () { local ct
+  for ctt(&ct) if(numc[ct] && div[ct][ct][0]) turnoff(ct,ct,1)
+}
+
+load_file("spkts.hoc")
+objref snq,fnq,anq,cvnq
+//get CVPNQS
+proc getcvnq () {
+  if(cvnq!=nil)nqsdel(cvnq)
+  if(numarg()==0) cvnq=CVPNQS(snq,1,1,0)
+  if(numarg()==1) cvnq=CVPNQS(snq,$1,1,0)
+  if(numarg()==2) cvnq=CVPNQS(snq,$1,$2,0)
+  if(numarg()==3) cvnq=CVPNQS(snq,$1,$2,$3)
+}
+//get PActNQS
+proc getanq () {
+  if(anq!=nil)nqsdel(anq)
+  if(numarg()==0) {
+    anq=PActNQS(snq)
+  } else if(numarg()==1) {
+    anq=PActNQS(snq,$1) 
+  } else if(numarg()==2) {
+    anq=PActNQS(snq,$1,$2) 
+  }
+}
+//get SpikeNQS
+proc getsnq () {
+  if(snq!=nil)nqsdel(snq)
+  snq=SpikeNQS(printlist.o(0),0)
+}
+//get SpikeNQS,FreqNQS
+proc getsfnq () {
+  getsnq()
+  if(fnq!=nil)nqsdel(fnq)
+  fnq=FreqNQS(snq,20,1,0)
+}
+//display & print average vals of snq,fnq
+proc dispfnq () { local ct
+  fnq.verbose=0
+  for ctt(&ct) {
+    fnq.select("Type",ct,"StartT","<=",tmax_INTF6)
+    printf("%s mean F = %g Hz\n",CTYP.o(ct).s,fnq.getcol("Freq").mean)
+    fnq.gr("Freq","EndT",0,clr,1)
+    clr+=1
+  }
+}
+//draw a black box showing stim duration
+proc dispsgrdur () {
+  if(g==nil)gg()
+  drline(0,0,0,$1,g,1,4)
+  drline(sgrdur,0,sgrdur,$1,g,1,4)
+  drline(0,$1,sgrdur,$1,g,1,4)
+  drline(0,0,sgrdur,0,g,1,4)
+}
+//draw $2 cell type in $3 color from PActNQS $o1
+proc dispPActNQ () { local ct,color localobj anq,str  
+  anq=$o1 ct=$2 color=$3 str=new String() str.s="act"
+  if(numarg()>3)str.s=$s4
+  anq.select("ct",ct)
+  gvmarkflag=0
+  anq.gr(str.s,"ts",0,color,9)
+  gvmarkflag=1
+  anq.gr(str.s,"ts",0,color,10)
+  gvmarkflag=0
+}
+//get nqs with prumat info
+obfunc getprnq () { local prty,poty localobj prnq
+  prnq=new NQS("prty","poty","pr")
+  for ctt(&prty) for ctt(&poty) if(prumat[prty][poty]!=0) prnq.append(prty,poty,prumat[prty][poty])
+  return prnq
+}
+//get nqs with sprmat info
+obfunc getsprnq () { local prty,poty localobj sprnq
+  sprnq=new NQS("prty","poty","spr")
+  for ctt(&prty) for ctt(&poty) if(sprmat[prty][poty]!=0) sprnq.append(prty,poty,sprmat[prty][poty])
+  return sprnq
+}
+
+//rerun sim from nqs -- use :
+// objref nqn
+//nqn=new NQS("/u/samn/vcortex/data/08nov7_dodviptbatch_NORMUNIFNEGEXPDVFIXED_S0_399_eg2p15_update.nqs")
+//rernqs(nqn,rowid)
+proc rernqs () { local s,tm,ix,w localobj iq,wmnq
+  iq=$o1 ix=$2 // ix will be row num in the NQS
+  w=iq.fi("wght")
+  s=iq.get("s",ix).x setdviPT=iq.get("setdviPT",ix).x tm=iq.get("tmax",ix).x 
+  EGain=iq.get("EGain",ix).x IGain=iq.get("IGain",ix).x sgrdur=iq.get("sgrdur",ix).x
+  if(iq.fi("vsgrpp")!=-1)vsgrpp=iq.get("vsgrpp",ix).o
+  if(iq.fi("vsgrsidx")!=-1)vsgrsidx=iq.get("vsgrsidx",ix).o
+  if(iq.fi("wght")!=-1){
+    wmnq=iq.get("wght",ix).o setwt(wmnq)
+  } else {
+    setwt()
+  }
+  setdvi(s)
+  stim()
+  print "\nSim should run out to tmax=",tm
+  time()
+}
+
+//* function calls
+prl(1,1)

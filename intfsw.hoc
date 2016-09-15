@@ -1,0 +1,771 @@
+// $Id: intfsw.hoc,v 1.76 2011/10/21 00:37:00 samn Exp $ 
+// load_file("intfsw.hoc")
+
+print "Loading intfsw.hoc..."
+
+{load_file("nqs.hoc")}
+{load_file("drline.hoc")}
+{load_file("boxes.hoc")}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//                               some usage 
+//
+//  adj=AdjList() //creates adjacency list used by other functions, it is global obj
+//                //that other functions use internally
+//
+//  this is a variable, users can define their own, but it's not needed for hoc code:
+//  subs = 640/numc[SU] //# btwn 0 and 1 specifying % of cells to use in computation
+//  of path length and/or clustering coefficient, it can be passed into the functions
+//  
+//  this type of sequence gets excitatory path length for net:
+//  vd=GetNetEXL(-1,subs) // -1 means get full path lengths of ALL distances
+//  vd.gzmean // this will give you path length value for net
+//
+//  this type of sequence gets excitatory cell clustering coefficient for net:
+//  vc=GetNetEXCC(ix[DP],ixe[SU],subs) //excitatory (DP,SU) cell clustering coefficient
+//  vc.gzmean // this will give you clustering coefficient value for net
+//
+//
+//////////////////////////////////////////////////////////////////////////////////////
+
+{declare("adj",nil,"vd",nil,"vc",nil,"allcells",0,"div","d[1][1]")}
+sprint(tstr,"o[%d]",CTYPi+1)
+{declare("nxadjg",nil,"vhistg",tstr,"vhistgd",tstr,"intfswb","nil")}
+{declare("divnq",nil,"convnq",nil,"intfswbfl",1,"getactive",1,"loadednetworkx",0)}
+{install_intfsw()}
+
+obfunc AdjTab () { local idx,jdx localobj adj,vid
+  if (verbose) printf("generating adjacency matrix")
+  adj=new List()
+  for idx=0,allcells-1 adj.append(new Vector(allcells))
+  for idx=0,allcells-1{
+    if(verbose && idx%100==0)printf(".")
+    vid=GetDiv(idx)
+    for jdx=0,vid.size-1 adj.o(idx).x(vid.x(jdx))=1
+  }
+  if (verbose) printf("\n")
+  return adj
+}
+
+//* AdjList - get list of adjacency lists
+//[optional] $1 = startid
+//[optional] $2 = endid
+//[optional] $3 = skip inhib cells from list
+//[optional] $o4 = CE list - default uses global ce
+obfunc AdjList () { local idx,jdx,startid,endid,ct,dv,skipinhib localobj adj,vid,vtmp,CE
+  if (verbose) printf("generating adjacency list")
+  if (numarg()>0) startid=$1 else startid=0
+  if (numarg()>1) endid=$2 else endid=allcells-1
+  if (numarg()>2) skipinhib=$3 else skipinhib=0
+  if (numarg()>3) CE=$o4 else CE=ce
+  adj=new List()
+  for idx=0,CE.count-1 adj.append(new Vector(CE.o(idx).getdvi))
+  CE.o(0).adjlist(adj,startid,endid,skipinhib)
+  return adj
+}
+
+//** adjstrg() -- get a string representation of adjacency list for use with dot
+obfunc adjstrg () { local i,j localobj str,lc
+  lc=new List()
+  lc.append(new String("blue"))
+  lc.append(new String("red"))
+  str=new String2()
+  str.s="digraph G {"
+  for i=0,adj.count-1{ 
+    for j=0,adj.o(i).size-1{
+      sprint(str.t,"%d -> %d [color=%s];\n",i,adj.o(i).x(j),lc.o(ice(ce.o(i).type)).s)
+      strcat(str.s,str.t)
+    }
+    sprint(str.t,"%d [color=%s];\n",i,lc.o(ice(ce.o(i).type)).s)
+    strcat(str.s,str.t)
+  }
+  strcat(str.s,"}\n")
+  return str
+}
+
+//** net2txtf(path) -- save net to text file representation
+func net2txtf () { local jdx,idx,syns localobj F,vid
+  F = new File()
+  F.wopen($s1)
+  if(!F.isopen){
+    printf("couldn't open for saving\n")
+    return 0
+  }
+  syns = 0
+  for idx=0,ce.count-1 syns += ce.o(idx).getdvi
+  F.printf("%d\n",ce.count)//# of cells  
+  F.printf("%d\n",syns)//# of synapses
+  F.printf("%d\n",ecells)
+  F.printf("%d\n",icells)
+  for idx=0,ce.count-1{
+    if(ice(ce.o(idx).type)) F.printf("I ") else F.printf("E ")
+    F.printf("%g %g %g\n",ce.o(idx).xloc,ce.o(idx).yloc,ce.o(idx).zloc)
+  }
+  vid=new Vector(allcells)
+  vid.resize(0)
+  for idx=0,ce.count-1{
+    ce.o(idx).getdvi(vid)
+    for jdx=0,vid.size-1{
+      if(ice(ce.o(idx).type)) F.printf("I ") else F.printf("E ")
+      F.printf("%d %d\n",idx,vid.x(jdx))
+    }
+  }
+  F.close
+  return 1
+}
+
+//write net to pajek .net file , can also be used in GUESS graph visualization program
+//$s1=output file path, $o2=vector of cell types to add to output file
+func writepajek () { local idx,jdx,ty,ndx localobj fp,vid,vdel,lc,vty,nqc
+  fp=new File() vid=new Vector(allcells) vdel=new Vector(allcells)
+  lc=new List() lc.append(new String("Red")) lc.append(new String("Blue")) vty=$o2
+  fp.wopen($s1)
+  if(!fp.isopen())return 0
+  fp.printf("*Vertices %d\r\n",allcells)
+  for idx=0,allcells-1{
+    ty=ce.o(idx).type if(!vty.contains(ty))continue
+    fp.printf("%d \"%s%d\" ic %s\r\n",idx+1,CTYP.o(ty).s,idx,lc.o(ice(ty)).s)
+  }
+  fp.printf("*Arcslist\r\n")  
+  for idx=0,allcells-1 {
+    ce.o(idx).getdvi(vid,vdel) ty=ce.o(idx).type
+    if(!vty.contains(ty))continue
+
+    fp.printf("%d ",idx+1)
+    for ndx=0,vid.size/2 {
+      jdx=vid.x(ndx)
+      if(!vty.contains(ce.o(jdx).type))continue
+      fp.printf("%d ",jdx+1)
+    }
+    fp.printf("1 c %s",lc.o(ice(ty)).s)
+    fp.printf("\r\n")
+
+    fp.printf("%d ",idx+1)
+    for ndx=1+vid.size/2,vid.size-1 {
+      jdx=vid.x(ndx)
+      if(!vty.contains(ce.o(jdx).type))continue
+      fp.printf("%d ",jdx+1)
+    }
+//    for vtr(&jdx,vid) {
+//      if(!vty.contains(ce.o(jdx).type))continue
+//      fp.printf("%d ",jdx+1)
+//      fp.printf("%d %d 1 c %s\r\n",idx+1,jdx+1,lc.o(ice(ty)).s)
+//    }
+    fp.printf("1 c %s",lc.o(ice(ty)).s)
+    fp.printf("\r\n")
+  }
+  fp.close()
+  return 1
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////
+//get path existence/distance vector ==
+// vector with:
+//   d==0==no path between cell $1 and cell index
+//               and
+//   d>0==a path exists between cell $1 and cell index of distance d
+//
+// $1 = cell id to start search from
+// $2 = minimum id of destination
+// $3 = maximum id of destination
+// $4 = max distance to search
+obfunc GetPathEV () { local idx,myid,idist,startid,endid,maxdist localobj vd,vcheck,vtmp
+  if(adj==nil)adj=AdjList()  
+  myid=$1  
+  if(numarg()>1)startid=$2 else startid=0
+  if(numarg()>2)endid=$3 else endid=allcells-1
+  if(numarg()>3)maxdist=$4 else maxdist=-1
+  vd=new Vector(allcells)
+  GetPathEV_intfsw(adj,vd,myid,startid,endid,maxdist)
+  return vd
+}
+
+//check if network is fully connected == any cell has a path
+//to any other cell
+//can use speedup/efficiency improvements
+func FullyConnected () { local idx localobj vd
+  for idx=0,allcells-1{
+    if(idx%100==0)printf("checking path from cell %d to others\n",idx)
+    vd=GetPathEV(idx)
+    if(vd.count(0)>1){
+      printf("cell %d not fully connected to other cells, only has path to %d cells\n",idx,allcells-vd.count(0))
+      return 0
+    }
+  }
+  return 1
+}
+
+//approximate path length formula
+//N=# of vertices
+//$1=# of 1st degree neighbors
+//$2=# of 2nd degree neighbors
+func ApproxL () { local z1,z2,N
+  N=$1  z1=$2 z2=$3
+  return log(N/z1)/log(z2/z1)+1
+}
+
+//get approximate path length by first getting # of
+//1st & 2nd degree neighbors
+func GetApproxL () { local z1,z2,i,subsamp localobj lvnn,vtmp
+  if(numarg()>0)subsamp=$1 else subsamp=1
+  if(adj==nil) if(numc[DP]) adj=AdjList(ix[DP],ixe[SU]) else adj=AdjList()
+  lvnn=new List()
+  for i=0,1{
+    vtmp=GetNumNeighbors(i+1,ix[DP],ixe[SU],1,adj,subsamp)
+    lvnn.append(vtmp)
+  }
+  {z1=lvnn.o(0).gzmean(ix[DP],ixe[SU]) printf("z1=%g\n",z1)}
+  {z2=lvnn.o(1).gzmean(ix[DP],ixe[SU]) printf("z2=%g\n",z2)}
+  return ApproxL((1-killDP)*numc[DP]+(1-killSU)*numc[SU],z1,z2)
+}
+
+//returns vector of size allcells containing avg dist from that cell
+//to all other cells it is connected to
+obfunc GetNetL () { local from,gzm,sid,eid localobj vdist,vtmp
+  if(numarg()>0)sid=$1 else sid=0
+  if(numarg()>1)eid=$2 else eid=allcells-1
+  vdist=new Vector(allcells) vtmp=new Vector(allcells)
+  adj=AdjList(sid,eid) //make sure initialized properly in face of prup,killp,etc.
+  printf("searching from id: ")
+  for from=sid,eid{
+    if(verbose && from%100==0)printf("%d...",from)
+    if(ce.o(from).flag("dead"))continue
+    vtmp=GetPathEV(from,sid,eid)
+    if((gzm=vtmp.gzmean)>0){
+      vdist.x(from)=gzm
+    }
+  }
+  printf("\n")
+  return vdist
+}
+
+// ** GetNetEXLSubPops -- get path length between excitatory subpopulations
+// returns Vector of size allcells, to see path length do Vector.gzmean
+// $1 == from population
+// $2 == to population
+// $3 == subsamp [default == 1, optional]
+// $4 == take into account self-loop-length [default == 0, optional]
+obfunc GetNetEXLSubPops () { local subsampi,from,selfl localobj vd,vstart,vend
+  from=$1 to=$2
+  if(numarg()>2) subsamp=$3 else subsamp=1
+  if(numarg()>3) selfl=$4 else selfl=0
+  if(adj==nil) adj=AdjList(0,allcells-1,1)//get adjacency list
+  {vstart=new Vector(allcells) vend=new Vector(allcells) vd=new Vector(allcells)}
+  for i=ix[from],ixe[from] vstart.x(i)=1
+  for i=ix[to],ixe[to] vend.x(i)=1
+  GetPathSubPop_intfsw(adj,vd,vstart,vend,subsamp,selfl)
+  printf("exl path from sub pop %s to %s = %g\n",CTYP.o(from).s,CTYP.o(to).s,vd.gzmean)
+  return vd
+}
+
+//returns vector of size allcells containing avg dist from that cell
+//to all other excitatory(E) cells it is connected to
+//only travels paths through E cells
+//$1 == max dist , default == -1, to search all distances
+//$2 == subsamp -- only use subsamp% of cells
+//$3 == first turn off sub-pop to sub-pop [optional] default == -1
+obfunc GetNetEXL () { local from,gzm,maxdist,subsamp localobj vdist,rdm,vuse
+  if(numarg()>0)maxdist=$1 else maxdist=-1
+  if(numarg()>1)subsamp=$2 else subsamp=1
+  if(adj==nil)adj=AdjList(0,allcells-1,1) //make sure initialized properly in face of prup,killp,etc.
+  vdist=new Vector(adj.count)
+  GetPathR_intfsw(adj,vdist,0,adj.count-1,-1,subsamp)
+  return vdist
+}
+
+//import networkx python library
+func initnetworkx () {
+  if(loadednetworkx) return 1
+  if(!nrnpython("import networkx")) {
+    printf("initnetworkx ERRA: couldn't import networkx python library!\n")
+    return 0
+  }
+  loadednetworkx=1
+  return 1
+}
+
+//get a PythonObject containing adjacency list adj, with variable name = $s1, $2==skip I cells
+obfunc NXAdjG () { local idx,jdx,skipI localobj str,py  
+  if(!initnetworkx()) return nil
+  str=new String()
+  sprint(str.s,"%s=networkx.XDiGraph()",$s1)
+  py=new PythonObject()
+  if(!nrnpython(str.s)){
+    printf("NXAdjG ERRA: Couldn't evaluate %s in python!\n",str.s)
+    return nil
+  }
+  if(numarg()>1)skipI=$2 else skipI=1
+  for idx=0,allcells-1 if(!skipI || !ice(ce.o(idx).type)) {
+    sprint(str.s,"%s.add_node(%d)",$s1,idx)
+    if(!nrnpython(str.s)){
+      printf("NXAdjG ERRB: Couldn't add node %d to %s\n",idx,$s1)
+      return nil
+    }
+  }
+//  if(!adj)adj=AdjList(0,allcells-1,skipI)
+//  for idx=0,adj.count-1 for jdx=0,adj.o(idx).count-1 {
+//    sprint(str.s,
+//  }
+  return py
+}
+
+func tyfunc () { return ce.o($1).type }
+
+//get between-ness centrality of all E cells, in output NQS
+obfunc GetNetECent () { localobj vcent,centnq
+  if(adj==nil)adj=AdjList(0,allcells-1,1)
+  vcent=new Vector(adj.count) vcent.fill(0)
+  GetCentrality_intfsw(adj,vcent)
+  centnq=new NQS("id","type","C")
+  centnq.v[0].indgen(0,adj.count-1,1)
+  centnq.v[1].copy(centnq.v[0])
+  centnq.v[1].apply("tyfunc")
+  centnq.v[2].copy(vcent)
+  return centnq
+}
+
+//gets vector with loop/return path-lengths to each excitatory cell
+// out.x(idx)=0 means no such path found to cell idx
+obfunc GetNetELoop () { local idx localobj vdist,vloop,vf,vto
+  vdist=new Vector(1) vloop=new Vector(allcells) vf=new Vector(1) vto=new Vector(1)
+  if(adj==nil)adj=AdjList(0,allcells-1,1)//make sure initialized properly in face of prup,killp,etc.
+  for idx=0,allcells-1 {
+    if(ice(ce.o(idx).type)) {
+      vloop.x(idx)=0
+      continue
+    }
+    vf.x(0)=vto.x(0)=idx
+    GetPairDist_intfsw(adj,vdist,vf,vto)
+    vloop.x(idx)=vdist.x(0)
+  }
+  return vloop
+}
+
+// ** wirenq -- get wiring nqs, preid, postid, delay, wt1, wt2
+// iff numarg()>0 $1 == only store info on excitatory connections
+obfunc wirenq () { local ii,jj,exonly localobj vid,vdel,vprob,vw1,vw2,nq,vpl
+  if(numarg()>0) exonly=$1 else exonly=0
+  {vid=new Vector() vdel=new Vector() vprob=new Vector() vw1=new Vector() vw2=new Vector()}
+  nq=new NQS("preid","poid","del","wt1","wt2")
+  if(exonly){
+    for ii=0,allcells-1{
+     if(ice(ce.o(ii))) continue
+     ce.o(ii).getdvi(1,vid,vdel,vprob,vw1,vw2)
+     for jj=0,vid.size-1{
+       if(ice(ce.o[vid.x(jj)])) continue
+       nq.append(ii,vid.x(jj),vdel.x(jj),vw1.x(jj),vw2.x(jj))
+     }
+    }
+  } else {
+    for ii=0,allcells-1{
+      ce.o(ii).getdvi(1,vid,vdel,vprob,vw1,vw2)
+      for jj=0,vid.size-1{
+        if(ice(ce.o[vid.x(jj)])){
+          vw1.mul(-1)
+          vw2.mul(-1)
+        } 
+        nq.append(ii,vid.x(jj),vdel.x(jj),vw1.x(jj),vw2.x(jj))
+      }
+    }
+  }
+  return nq
+}
+
+// ** GetNetWEXL() -- get weighted network excitatory path length
+// uses directed weighted graph where distance between nodes is == delay/weight
+// done for AMPA,NMDA or BOTH -- $1 == ampa flag, $2 == nmda flag
+// $o3 == wirenq , [optional]
+// $4 == flip order of preid, poid (convergence instead of divergence lengths) [optional]
+obfunc GetNetWEXL () { local ampa,nmda,edgef,flip\
+                      localobj vid,vdel,vprob,vw1,vw2,nq,vpl,vs,vpre,vpo
+  if(numarg()>0) ampa=$1 else ampa=1
+  if(numarg()>1) nmda=$2 else nmda=1
+  if(numarg()>2) nq=$o3 else nq = wirenq(1)
+  if(numarg()>3) flip=$4 else flip=0
+  vpl=new Vector(allcells)
+  vdel=new Vector()
+  if(flip){ // flip pre and po
+    vpre=nq.getcol("poid")
+    vpo=nq.getcol("preid")
+  } else {
+    vpre=nq.getcol("preid")
+    vpo=nq.getcol("poid")
+  }
+  nq.getcol("del",vdel)
+  if(ampa && nmda){
+    vs=new Vector()
+    vs.copy(nq.getcol("wt1"))
+    vs.add(nq.getcol("wt2"))
+    GetWPath_intfsw(vpre,vpo,vs,vdel,vpl)
+  } else if(ampa){
+    GetWPath_intfsw(vpre,vpo,nq.getcol("wt1"),vdel,vpl)
+  } else if(nmda){
+    GetWPath_intfsw(vpre,vpo,nq.getcol("wt2"),vdel,vpl)
+  } else { 
+    if(numarg()<=2)nqsdel(nq)
+    return nil
+  }
+  if(numarg()<=2)nqsdel(nq)
+  return vpl
+}
+
+// ** GetNetWL() -- get weighted network path length, takes inhibitory contributions as
+// weight/delay , and excitatory contributions as delay/weight
+// only uses AMPA/GABAA or NMDA/GABAB
+obfunc GetNetWL () { local ampagabaa localobj vid,vdel,vprob,vw1,vw2,nq,vpl
+  if(numarg()>0) ampagabaa=$1 else ampagabaa=1
+  nq = wirenq(0)
+  vpl=new Vector(nq.size)
+  if(ampagabaa){
+    GetWPath_intfsw(nq.getcol("preid"),nq.getcol("poid"),nq.getcol("wt1"),nq.getcol("del"),vpl)
+  } else {
+    GetWPath_intfsw(nq.getcol("preid"),nq.getcol("poid"),nq.getcol("wt2"),nq.getcol("del"),vpl)
+  }
+  return vpl
+}
+
+
+// ** GetNetEXCCSubPops -- get clustering coefficient between excitatory subpopulations
+// returns Vector of size allcells, to see path length do Vector.gzmean
+// $1 == from population
+// $2 == to population
+// $3 == subsamp [default == 1, optional]
+obfunc GetNetEXCCSubPops () { local subsampi,from localobj vd,vstart,vend
+  from=$1 to=$2
+  if(numarg()>2) subsamp=$3 else subsamp=1
+  if(adj==nil) adj=AdjList(0,allcells-1,1)//get adjacency list
+  {vstart=new Vector(allcells) vend=new Vector(allcells) vd=new Vector(allcells)}
+  for i=ix[from],ixe[from] vstart.x(i)=1
+  for i=ix[to],ixe[to] vend.x(i)=1
+  GetCCSubPop_intfsw(adj,vd,vstart,vend,subsamp)
+  printf("excc from sub pop %s to %s = %g\n",CTYP.o(from).s,CTYP.o(to).s,vd.nnmean)
+  return vd
+}
+
+//get clustering coefficient vector for excitatory cells
+//usage: vcc = GetNetEXCC()
+//vcc.x(i) is clustering coefficient of cell i (must be >= 0.0 && <= 1.0)
+//otherwise there was a problem...
+//vcc.mean(ix[DP],ixe[SU]) is clustering coefficient of excitatory cells for entire network
+obfunc GetNetEXCC () { local idx,sid,eid,subsamp localobj vcc,vuse
+  if(adj==nil)adj=AdjList(0,allcells-1,1)
+  if(numarg()>0)sid=$1 else sid=0
+  if(numarg()>1)eid=$2 else eid=adj.count-1
+  if(numarg()>2)subsamp=$3 else subsamp=1
+  vcc=new Vector(adj.count)
+  GetCCR_intfsw(adj,vcc,sid,eid,subsamp)
+  return vcc
+}
+
+//returns vector of size allcells containing num of neighbors <= $1 distance away
+//for each cell
+obfunc GetNumNeighbors () { local maxdist,startid,endid,exact,subsamp,sead localobj vdist,vtmp,vuse,rdm
+  maxdist=$1
+  if(numarg()>1)startid=$2 else startid=ix[DP]
+  if(numarg()>2)endid=$3 else endid=ixe[SU]
+  if(numarg()>3)exact=$4 else exact=0
+  if(numarg()>4)adj=$o5 else if(adj==nil) adj=AdjList()//make sure initialized properly in face of prup,killp,etc.
+  if(numarg()>5)subsamp=$6 else subsamp=1
+  vdist=new Vector(allcells) vtmp=new Vector(allcells)
+  printf("searching from id: ")
+  CountNeighborsR_intfsw(adj,vdist,startid,endid,maxdist,subsamp)
+  return vdist
+}
+
+//returns vector of size allcells containing # of recurrent connections terminating on cell
+//i in out.x(i)
+//$1 == from type, -1 means from all E cells, -2 means all I cells, as a vec from all types in vec
+//$2 == thru type, -1 means thru all E cells, -2 means all I cells, as a vec thru all types in vec
+obfunc GetRecurVec () { local from,thru,ct localobj vRC,vfrom,vthru,vtmp
+  vRC=new Vector(allcells) vfrom=new Vector(allcells) vthru=new Vector(allcells)
+  vRC.fill(0) 
+  if(adj==nil)adj=AdjList()
+  if(numarg()>0) {
+    if(argtype(1)==0) {
+      if($1>=0) {
+        vfrom.fill(1,ix[$1],ixe[$1]) //from only a specific type
+      } else if($1==-1) { // E cells
+        for ctt(&ct) if(!ice(ct)) vfrom.fill(1,ix[ct],ixe[ct])
+      } else for ctt(&ct) if(ice(ct)) vfrom.fill(1,ix[ct],ixe[ct]) // I cells
+    } else {
+      for vtr(&from,$o1) vfrom.fill(1,ix[from],ixe[from]) //from a bunch of types
+    }
+  } else vfrom.fill(1)
+  if(numarg()>1) {
+    if(argtype(1)==0) {
+      if($1>=0) {
+        vthru.fill(1,ix[$2],ixe[$2])
+      } else if($1==-1) { // E cells
+        for ctt(&ct) if(!ice(ct)) vthru.fill(1,ix[ct],ixe[ct])
+      } else for ctt(&ct) if(ice(ct)) vthru.fill(1,ix[ct],ixe[ct]) // I cells
+    } else {
+      for vtr(&thru,$o1) vthru.fill(1,ix[thru],ixe[thru]) //thru a bunch of types
+    }
+  } else vthru.fill(1)
+  GetRecurCount_intfsw(adj,vRC,vfrom,vthru)
+  return vRC
+}
+
+//* DivNQS([cell list]) - gets NQS with # of outputs of a given type from each cell
+obfunc DivNQS () { local a,idx,x,flag localobj nq,vc,vd,vo,vty,st,CE,vcnt,xo
+  if(numarg()>0)CE=$o1 else CE=ce
+  st=new String2()
+  nq=new NQS("id","type")
+  a=allocvecs(vc,vd,vty,vo,vcnt,CTYPi+1)
+  vrsz(0,vc,vd,vo,vty) vcnt.resize(CTYPi)
+  for ltr(xo,CE) vcnt.x(xo.type)+=1
+  for x=0,CTYPi-1 if(vcnt.x(x)) {
+    {sprint(st.s,"to%s",CTYP.o(x).s) nq.resize(st.s) vty.append(x)} // vty -- type vec
+  }
+  nq.clear(CE.count) // make big enough
+  flag=getactive+0.2
+  for idx=0,CE.count-1 {
+    CE.o(idx).getdvi(flag,vc) // picks up for all existing (CTYP) cell types
+    vo.index(vc,vty) // only take the ones for the relevant types
+    revec(vd,idx,CE.o(idx).type) vd.append(vo) // put in the id and type values for the postcell
+    nq.append(vd)
+  }
+  dealloc(a)
+  return nq
+}
+
+//* ConvNQS([cell list]) - gets NQS with # of inputs of a given type onto each cell
+obfunc ConvNQS () { local a,idx,x,flag localobj nq,vc,vd,vo,vty,st,CE,vcnt,xo
+  if(numarg()>0)CE=$o1 else CE=ce
+  st=new String2()
+  nq=new NQS("id","type")
+  a=allocvecs(vc,vd,vty,vo,vcnt,CTYPi+1)
+  vrsz(0,vc,vd,vty) vcnt.resize(CTYPi)
+  for ltr(xo,CE) vcnt.x(xo.type)+=1
+  for x=0,CTYPi-1 if(vcnt.x(x)) {
+    {sprint(st.s,"f%s",CTYP.o(x).s) nq.resize(st.s) vty.append(x)} // vty -- type vec
+  }
+  nq.clear(CE.count) // make big enough
+  flag=getactive+0.2
+  for idx=0,CE.count-1 {
+    CE.o(idx).getconv(flag,vc) // picks up for all possible cell types
+    vo.index(vc,vty) // only take the ones for the relevant types
+    revec(vd,idx,CE.o(idx).type) vd.append(vo) // put in the id and type values for the postcell
+    nq.append(vd)
+  }
+  dealloc(a)
+  return nq
+}
+
+//display conv hists in graphs
+proc ShowConvHists () { local from,to,jj,ii,num localobj vt,vt2,mystr,o,xo,yo
+  mystr=new String()       hflg=2      ers=0
+  if(numarg()<1 && convnq!=nil)nqsdel(convnq)
+  if(convnq==nil) convnq=ConvNQS()
+  convnq.verbose=0
+  num=0
+  for ctt(&to) num+=1 // count the active cells
+  if (intfswbfl) {
+    for ltr(yo,boxerl) if (strm(yo.name,"CONV")) o=yo
+    if (o!=nil) { // reuse this box
+      if (o.size!=num) {printf("ERR: wrong # of graphs in tray: %d %d\n",o.size,num) return}
+      for ltr(xo,o.gl) xo.erase_all
+    } else o=mktray("CONV",num)
+    for ctt(&to,&ii) vhistg[to]=o.gl.o(ii)
+  } else for ctt(&to) {
+    if(vhistg[to]==nil || numarg()<1) vhistg[to]=new Graph() else vhistg[to].erase_all
+  }  
+  for ctt(&to) {
+    sprint(mystr.s,"conv hist onto %s",CTYP.o(to).s)
+    vhistg[to].color(to)
+    vhistg[to].label(0.35,0.95,mystr.s)
+    for ctt(&from,&ii){
+      if(!div[from][to]) continue
+      clr=from
+      if(convnq.select("type",to)){
+        sprint(mystr.s,"f%s",CTYP.o(from).s)
+        vt=convnq.getcol(mystr.s)
+        sprint(mystr.s,"from %s avg=%g",CTYP.o(from).s,vt.mean)
+        if (vt.min==vt.max) {
+          vhistg[to].mark(vt.min,0,"S",10,clr,4)
+        } else {
+          hist(vhistg[to],vt)
+        }
+        vhistg[to].color(clr)
+        vhistg[to].label(0.5,0.88-0.05*ii,mystr.s)
+      }
+    }
+    vhistg[to].exec_menu("View = plot")
+  }  
+  convnq.verbose=1
+}
+
+//display div hists in graphs -- skips inhibitory cells for now...
+proc ShowDivHists () { local from,to,ii,jj,num,rows,cols localobj vt,mystr,o,xo,yo
+  mystr=new String()      hflg=2      ers=0
+  if(numarg()<1 && divnq!=nil)nqsdel(divnq)
+  if(divnq==nil) divnq=DivNQS()
+  divnq.verbose=0
+  num=0
+  for ctt(&from) num+=1 // count the active cells
+  if (intfswbfl) {
+    for ltr(yo,boxerl) if (strm(yo.name,"DIV")) o=yo
+    if (o!=nil) { // reuse this box
+      if (o.size!=num) {printf("ERR: wrong # of graphs in tray: %d %d\n",o.size,num) return}
+       for ltr(xo,o.gl) xo.erase_all
+   } else o=mktray("DIV",num)
+    for ctt(&from,&ii) vhistgd[from]=o.gl.o(ii)
+  } else for ctt(&from) {
+    if(vhistgd[from]==nil || numarg()<1) vhistgd[from]=new Graph() else vhistgd[from].erase_all
+  }  
+  for ctt(&from,&jj) {
+    sprint(mystr.s,"div hist from %s",CTYP.o(from).s)
+    vhistgd[from].color(from)
+    vhistgd[from].label(0.35,0.95,mystr.s)
+    for ctt(&to,&ii){
+      if(!div[from][to]) continue
+      clr=to
+      if(divnq.select("type",from)){
+        sprint(mystr.s,"to%s",CTYP.o(to).s)
+        vt=divnq.getcol(mystr.s)
+        sprint(mystr.s,"to %s avg=%g",CTYP.o(to).s,vt.mean)
+        if(vt.min==vt.max){
+          vhistgd[from].mark(vt.min,0,"S",10,clr,4)
+        } else {
+          hist(vhistgd[from],vt)
+        }
+        vhistgd[from].color(clr)
+        vhistgd[from].label(0.5,0.88-0.05*ii,mystr.s)
+      }
+    }
+    vhistgd[from].exec_menu("View = plot")
+  }  
+  divnq.verbose=1
+}
+
+//get index of GetCellNQ arg which column is needed, $s1=colname
+func getcellnqcolid () { localobj str
+  str=new String()
+  str.s=$s1
+  if(!strcmp($s1,"wexl")){
+    return 1
+  } else if(!strcmp($s1,"snq")) {
+    return 2
+  } else if(!strcmp($s1,"fnq")) {
+    return 3
+  } else if(!strcmp($s1,"C")) {
+    return 4
+  } else if(!strcmp($s1,"exl")) {
+    return 5
+  } else if(!strcmp($s1,"excc")) {
+    return 6
+  } else if(!strcmp($s1,"conv") || strm($s1,"f")) {
+    return 7
+  } else if(!strcmp($s1,"div") || strm($s1,"to")) {
+    return 8
+  } else if(!strcmp($s1,"blk")) {
+    return 9
+  }
+  return 0
+}
+
+func ifunc () { return ice(ce.o($1).type) }
+//get nqs with cell properties including: centrality, exl, excc, div to all types, conv to all types
+//$1=do wexl,$2=do snq,$3=do fnq,$4=do C,$5=do exl,$6=do excc,$7=do convnq,$8=do div,$9=do block
+obfunc GetCellNQ () { local i,id,n,doexl,doexcc,doconv,doC,dodiv,doblk\
+                     localobj nq,nqt,vv,snq,fnq
+  nq=new NQS("id","type") adj=nil
+  nq.v[0].indgen(0,allcells-1,1)  nq.v[1].copy(nq.v[0]) nq.v[1].apply("tyfunc")
+  if(numarg()>3)doC=$4 else doC=1
+  if(numarg()>4)doexl=$5 else doexl=1
+  if(numarg()>5)doexcc=$6 else doexcc=1
+  if(numarg()>6)doconv=$7 else doconv=1
+  if(numarg()>7)dodiv=$8 else dodiv=1
+  if(numarg()>8)doblk=$9 else doblk=1
+  if(doC){
+    if (verbose) printf("getting centrality nq\n") nqt=GetNetECent() 
+    nq.resize("C") nq.v[nq.m-1].copy(nqt.v[nqt.m-1]) nqsdel(nqt)
+  }
+  if(numarg()>0) if($1) {
+    {if (verbose) printf("getting wexl\n")
+      vv=GetNetWEXL()  nq.resize("wexl") nq.v[nq.m-1].copy(vv)}
+  }
+  if(doexl){
+    {if (verbose) printf("getting exl\n")
+      vv=GetNetEXL()  nq.resize("exl") nq.v[nq.m-1].copy(vv)}
+  }
+  if(doexcc){
+    {if (verbose) printf("getting excc\n")
+      vv=GetNetEXCC() nq.resize("excc") nq.v[nq.m-1].copy(vv)}
+  }
+  if(doconv){
+    if (verbose) printf("getting convnq\n") nqt=ConvNQS()
+    for i=2,nqt.m-1 {
+      nq.resize(nqt.s[i].s) nq.v[nq.m-1].copy(nqt.v[i])
+    }
+    nqsdel(nqt)
+  }
+  if(dodiv){
+    if (verbose) printf("getting divnq\n") nqt=DivNQS()
+    for i=2,nqt.m-1 {
+      nq.resize(nqt.s[i].s) nq.v[nq.m-1].copy(nqt.v[i])
+    }
+    nqsdel(nqt)
+  }
+  {nq.resize("inhib") nq.pad() nq.v[nq.m-1].copy(nq.v[0]) nq.v[nq.m-1].apply("ifunc")}
+  if(numarg()>1) if($2) {
+    if (verbose) printf("getting spike counts\n")
+    vv=printlist.o(0).vec    nq.resize("spikes") nq.pad() nq.v[nq.m-1].fill(0)
+    for vtr(&i,vv) nq.v[nq.m-1].x(i)+=1
+  }
+  if(doblk){
+    nq.resize("block") nq.pad() for i=1,allcells-1 nq.v[nq.m-1].x(i)=ce.o(i).spkcnt(i,i,2)
+  }
+  if(numarg()>2) if($3 && name_declared("FreqNQS")) {
+    if (verbose) printf("getting FreqNQS\n")
+    snq=SpikeNQS(printlist.o(0))
+    fnq=FreqNQS(snq,20,0,0)
+    for i=0,allcells-1 if((n=fnq.select("ID",i))) {
+      if(n>0){
+        nq.v[nq.m-1].x(i)=fnq.getcol("Freq").mean
+      } else {
+        nq.v[nq.m-1].x(i)=fnq.getcol("Freq").x(0)
+      }
+    }
+  }
+  if(snq!=nil)nqsdel(snq)
+  if(fnq!=nil)nqsdel(fnq)
+  return nq
+}
+
+//get nqs with rand value for each cell, $1==seed
+obfunc GetRandCellNQ () { local i localobj nq,rd
+  nq=new NQS("id","type","rand")
+  rd=new Random()
+  rd.ACG($1)
+  for i=0,allcells-1 nq.append(i,ce.o(i).type,rd.normal(0,1))
+  return nq
+}
+
+// from ShowDivHists()
+proc prdiv () { local from,to,jj,ii,num,rows,cols localobj vt,mystr,o,xo,yo
+  if (numarg()==1) o=$o1 else o=divnq
+  if (o==nil) o=divnq=DivNQS()
+  o.verbose=0
+  for ctt(&from,&jj) { printf("\ndiv from %s: ",CTYP.o(from).s)
+    if (o.select("type",from)) for ctt(&to,&ii) {
+      vt=o.getcol(CTYP.o(to).s)
+      printf("  to %s avg=%02.3f +- %02.3f",CTYP.o(to).s,vt.mean,vt.stdev) 
+  }}
+  print ""
+  o.verbose=1
+}
+proc prconv () { local from,to,jj,ii,num,rows,cols localobj vt,mystr,o,xo,yo
+  if (numarg()==1) o=$o1 else o=convnq
+  if (o==nil) o=convnq=ConvNQS()
+  o.verbose=0
+  for ctt(&to,&jj) { printf("\nconv to %s: ",CTYP.o(to).s)
+    if (o.select("type",to)) for ctt(&from,&ii) {
+      vt=o.getcol(CTYP.o(from).s)
+      printf("  from %s avg=%02.3f +- %02.3f",CTYP.o(from).s,vt.mean,vt.stdev) 
+  }}
+  print ""
+  o.verbose=1
+}

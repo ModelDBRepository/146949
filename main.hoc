@@ -1,0 +1,83 @@
+// MAIN.HOC
+// This is the key simulation file. Run this file to run the simulation.
+// Version: cliffk 9/18/12
+
+print "Loading main.hoc..."
+
+// Set up simulation parameters
+mytstop=2e3     // 2000 ms simulation duration
+scale=1         // 1x network size scale
+inputseed=1     // input noise random # seed
+dvseed=1        // wiring random # seed
+strdef filestem
+filestem="./runsim"    // filestem for data
+grpshocktyp=1   // group shock type (0=none,1=L2/3,2=L5A,3=L5B,4=L6)
+grpshockpct=13  // group shock % cells
+
+// Define parameters
+maxplastscalefactor=5 // Modulates the maximum amount of plasticity
+extinputscaling=0.0 // The rate at which external inputs are reduced for bigger models (since more internal activity); 0.2 for default or 0 for no scaling
+extinputratemod=0.8/scale^extinputscaling // Amount by which to modulate external input rates
+extinputweightmod=0.0001 // 0.92 // 0.0001 // 1.0 // Amount by which to modulate external input weights
+pmatscale= 1/scale // allows keeping it fixed while changing # of cells in network
+wmatscale=1.0  // scale for wmat, weight matrix
+slambda=15 // spatial length constant for probability of connections, used in swirecut, in um
+e4e2wt=4 // Scale factor for E4->E2 weight...seems too small as-is 
+tce4wt=4 // Scale factor from TC to E4 cells...this is too high but wasn't doing much before
+taurefracmod=1 // Scaling factor for relative refractory period time constant
+amprefracmod=1 // Scaling factor for relative refractory period amplitude
+delmscalemod=1 // Scaling factor for axonal delays
+sgrhzEE_E2sc = 1.0 // Scaling factor for external AM2 CSTIM rates for E2
+sgrhzEE_E5Bsc = 1.0 // Scaling factor for external AM2 CSTIM rates for E5B
+sgrhzEE_E5Rsc = 1.0 // Scaling factor for external AM2 CSTIM rates for E5R
+sgrhzEE_E6sc = 1.0 // Scaling factor for external AM2 CSTIM rates for E6
+// Multiplicative gain factors -- yes these double up on EEGain etc., but more convenient to do it this way, sorry it's kludgy!
+eemod=0.8 // E->E synapses
+eimod=1.4 // E->I synapses
+iemod=1.4 // I->E synapses
+iimod=0.8 // I->I synapses
+
+// Plasticity parameters -- see intf6.mod -- WARNING, not sure if these work with Sam's version
+ESTDP_INTF6 = 0 // Turn on/off E->X plasticity
+ISTDP_INTF6 = 0 // Turn on/off I->X plasticity
+EPOTW_INTF6 = 1 // Weight by which STDP produces synaptic potentiation if t(post)>t(pre) at an E->[anything] synapse
+EDEPW_INTF6 = 1 // Weight by which STDP produces synaptic depression if t(post)<t(pre) at an E->[anything] synapse
+IPOTW_INTF6 = 0 // Weight by which STDP produces synaptic potentiation if t(post)>t(pre) at an I->[anything] synapse
+IDEPW_INTF6 = 0 // Weight by which STDP produces synaptic depression if t(post)<t(pre) at an I->[anything] synapse
+
+// Group shock parameters
+//grpshocktyp = 0    // no shock
+//grpshocktyp = 1    // L2 shock
+//grpshocktyp = 2    // L5A shock
+//grpshocktyp = 3    // L5B shock
+//grpshocktyp = 4    // L6 shock
+//grpshockpct = 10
+
+
+// Load files
+load_file("setup.hoc")
+load_file("nrnoc.hoc")
+load_file("init.hoc")
+load_file("gcelldata.hoc")
+simdatainit()
+load_file("nqsnet.hoc")
+load_file("network.hoc")
+load_file("params.hoc")
+load_file("run.hoc")
+load_file("nload.hoc")
+
+
+// Set up weight-saving code -- WARNING, requires plasticity to be on
+/*load_file("saveweights.hoc")*/
+
+// RUN THE SIM
+print "Running simulation..."
+run() 
+
+// Save results to disk
+load_file("saveoutput.hoc") 
+
+print "main.hoc: done"
+
+// Exit automatically
+quit()

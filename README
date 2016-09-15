@@ -1,0 +1,50 @@
+This code generates figures related to the model defined in
+
+Chadderdon GL, Suter BA, Neymotin SA, Kerr CC, Shepherd GMG, 
+Lytton WW (2012) Interlaminar activity propagation in a spiking 
+model of primary motor cortex.  Frontiers in Neural Circuits.
+
+This document provides brief installation and usage instructions.
+
+INSTALLATION
+
+Note: the code has been designed to work on Linux machines. It may
+work on Macs and will definitely not work on Windows.
+
+Instructions:
+
+1. Unzip all files.
+2. Type "nrnivmodl *.mod" in the directory. This should create a
+directory called either i686 or x86_64, depending on your computer's
+architecture, and put a file called "special" in that directory.
+
+
+USAGE
+
+Run the simulation by typing "nrngui main.hoc" in the directory.  This
+saves data for the simulation.  To look at a cell spiking raster, type
+"ipython -i --pylab auto load.py" in the directory.  After this loads
+the data, it will bring up a figure which corresponds to Figure 2C
+from the paper.  Ctrl-D or "exit()" can be used to exit ipython from
+the prompt.
+
+To change the synchronous stimulation type and amplitude, the 
+following lines (14-15 of main.hoc) should be modified before 
+"nrngui main.hoc" is executed:
+
+  grpshocktyp=1   // group shock type (0=none,1=L2/3,2=L5A,3=L5B,4=L6)
+  grpshockpct=13  // group shock % cells
+
+"ipython -i --pylab auto load.py" after this will bring up the raster
+for those changes.
+
+Examples:
+* To get Fig. 2B, set up
+  grpshocktyp=1  
+  grpshockpct=12
+* To get Fig. 3C, set up
+  grpshocktyp=2  
+  grpshockpct=54
+* To get Fig. 5C, set up
+  grpshocktyp=4  
+  grpshockpct=17

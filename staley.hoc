@@ -1,0 +1,110 @@
+// $Id: staley.hoc,v 1.23 2010/01/15 21:07:35 samn Exp $ 
+
+print "Loading staley.hoc..."
+
+{install_staley()}
+
+//* trace analysis
+//** outputnqs = getsznq(inputvector)
+// gets an nqs with time-bounds of seizures detected with staley code in staley.mod
+obfunc getsznq () { local i,ns localobj nqsz,vtmp
+  nqsz=new NQS("id","numspikest","startidx","endidx","startms","endms","startmin","endmin")
+  vtmp=$o1
+  if ((ns=vtmp.getseizures(nqsz.v[1],nqsz.v[2],nqsz.v[3]))<1) return nil // "no seizures found"
+  if(ns>1) nqsz.v[0].indgen(0,nqsz.v[1].size-1,1) else nqsz.v[0].append(0)
+  for i=2,3 {
+    nqsz.v[i+2].copy(nqsz.v[i])
+    nqsz.v[i+2].mul(1e3/samprate_staley)
+    nqsz.v[i+4].copy(nqsz.v[i+2])
+    nqsz.v[i+4].div(60000)
+  }
+  return nqsz
+}
+
+//** getallchsznq(inputnqs with coumns as EEG time-series,vmask - mask of which columns to find seizures for)
+// get seizures on all channels of inputnqs($o1) specified in vids($o2)
+// in output nqs, "id" has the seizure identifier within a given channel, and "gid"
+// has the global seizure identifier across all channel
+// vmask.x(i) == 1 iff should use channel i (inputnqs.v[i]) to find seizures, otherwise channel i is skipped
+obfunc getallchsznq () { local a,idx,bsz,esz,ii,jj,lend,nid,gid,mii,mxi,changed,done,i,j,st1,st2,et1,et2,tt\
+                        localobj nqin,nqout,vmask,nqtmp,vch,vfrag,vb,ve,vdur,v1,v2,v3,\
+                        vsmin,vemin,vnsmin,vnemin,vid,vbe,vbi
+  nqin=$o1 vmask=$o2
+  if (vmask==nil) {vmask=getvmask(nqin) $o2=vmask}
+  nqout=new NQS("id","numspikest","startidx","endidx","startms","endms","startmin","endmin","ch")
+  nqout.info.set("chans",vch=new Vector(0))  nqout.info.set("frags",vfrag=new Vector(0))
+  nqout.info.set("beg",vb=new Vector(0))     nqout.info.set("end",ve=new Vector(0))
+  nqout.info.set("dur",vdur=new Vector(0))
+  nqout.info.set("begidx",vbi=new Vector(0)) nqout.info.set("endidx",vbe=new Vector(0))
+  a=allocvecs(v1,v2,v3,vsmin,vemin,vid,vnsmin,vnemin)
+  for idx=0,vmask.size-1 if(vmask.x(idx)!=0) {
+    // printf("looking for seizures on column %d\n",idx)
+    if((nqtmp=getsznq(nqin.v[idx]))!=nil) {
+      nqtmp.resize("ch") nqtmp.pad() nqtmp.v[nqtmp.m-1].fill(idx)
+      nqout.append(nqtmp) nqsdel(nqtmp)
+    }
+  }  
+  {nqout.sort("endmin") nqout.sort("startmin")}
+  {vid.resize(nqout.v.size) vsmin.copy(nqout.getcol("startmin")) vemin.copy(nqout.getcol("endmin"))}
+  for i=0,vsmin.size-1 { //find start/end of seizures overlapping across channels
+    {st1=vsmin.x(i) et1=vemin.x(i)}
+    for j=0,vsmin.size-1 if(i!=j) {
+      {st2=vsmin.x(j) et2=vemin.x(j)}
+      if(st2>=st1 && st2<=et1) {
+        {st1=MIN(st1,st2)      et1=MAX(et1,et2)}
+        {vsmin.x(i)=vsmin.x(j)=st1 vemin.x(i)=vemin.x(j)=et1}
+      } else if(st1>=st2 && st1<=et2) {
+        {st1=MIN(st1,st2)      et1=MAX(et1,et2)}
+        {vsmin.x(i)=vsmin.x(j)=st1 vemin.x(i)=vemin.x(j)=et1}
+      }
+    }
+  }
+  {vrsz(0,vnsmin,vnemin) nid=tt=0} //set global ids for seizures
+  if(vsmin.size>0) {tt=vemin.x(0)-vsmin.x(0) vnsmin.append(vsmin.x(0)) vnemin.append(vemin.x(0))}
+  if(vsmin.size>1) {
+    for i=0,vsmin.size-2 {
+      vid.x(i)=nid
+      if(vsmin.x(i)!=vsmin.x(i+1) || vemin.x(i)!=vemin.x(i+1)) {
+        {nid+=1 vnsmin.append(vsmin.x(i+1)) vnemin.append(vemin.x(i+1))}
+      }
+    }
+    if(vsmin.x(i)!=vsmin.x(i-1) || vemin.x(i)!=vemin.x(i-1)) nid+=1 //check last seizure's id
+    vid.x(i)=nid
+  } else if(vsmin.size==1) vid.x(0)=0
+  {nqout.resize("gid") nqout.getcol("gid").copy(vid)}//set the new gids
+  {vb.copy(vnsmin)  ve.copy(vnemin)}
+  {vbi.copy(vnsmin) vbe.copy(vnemin) vbe.apply("min2ind") vbi.apply("min2ind")}
+  {vdur.copy(ve) vdur.sub(vb)}
+  nqout.verbose=0
+  for ii=0,nid {
+    vfrag.append(nqout.select("gid",ii))
+    vch.append(nqout.getcol("ch").uniq())
+  }
+  nqout.verbose=1 nqout.tog("DB")
+  dealloc(a)
+  return nqout
+}
+
+//** stichallsznq(nqs from geallchsznq)
+//get nqs with overlapping(in time) seizures combined
+obfunc stitchallsznq () { local c1,c2,i,j,a localobj vs,ve,nqo,nqin
+  a=allocvecs(vs,ve)
+  nqin=$o1
+  nqin.tog("DB")
+  nqin.verbose=0
+  vrsz(nqin.v.size(),vs,ve)
+  c1=nqin.fi("startmin")
+  c2=nqin.fi("endmin")
+  for i=0,vs.size-1 {
+    vs.x(i)=nqin.v[c1].x(i)
+    ve.x(i)=nqin.v[c2].x(i)    
+  }
+  nqo=new NQS("id","startidx","endidx","startms","endms","startmin","endmin","numspikest")
+  for i=0,vs.size-1 {
+    for j=0,vs.size-1 {
+    }
+  }
+  dealloc(a)
+  nqin.verbose=1
+  return nqo
+}
