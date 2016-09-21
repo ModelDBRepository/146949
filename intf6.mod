@@ -1,4 +1,4 @@
-: $Id: intf6.mod,v 1.86 2011/10/21 00:35:24 samn Exp $
+: $Id: intf6.mod,v 1.100 2012/04/05 22:38:25 samn Exp $
 
 :* main COMMENT
 COMMENT
@@ -26,10 +26,18 @@ VERBATIM
 
 static int ctt(unsigned int, char**);
 static int setdvi2(double*,double*,char*,int,int,double*,double*);
+static int setdvi3(double*,double*,char*,int,double*,double*);
+void freesywv();
+// Definitions for synaptic scaling procs
+void raise_activity_sensor(double time);
+void decay_activity_sensor(double time);
+void update_scale_factor(double time);
+void dynamicdelete(double time);
+double get_avg_activity();
 
 #define PI 3.14159265358979323846264338327950288419716939937510
 #define nil 0
-#define CTYPp 41 // CTYPp>CTYPi from labels.hoc
+#define CTYPp 100 // CTYPp>CTYPi from labels.hoc
 #define SOP (((id0*) _p_sop)->vp)
 #define IDP (*((id0**) &(_p_sop)))
 #define NSW 100  // just store voltages
@@ -89,6 +97,19 @@ typedef struct ID0 {
   double* pplasttau; // plasticity tau for synapse
   double* pplastinc; // plasticity inc for synapse (max inc)
   double* pplastmaxw; // max weight gain for plasticity
+  double* pdope; // dopamine eligibility
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////
+  //     THE PARAMETERS IN THIS 'BLOCK' ARE ASSOCIATED WITH HOMEOSTATIC SYNAPTIC SCAING
+  double activity; // Slow-varying cell activity value
+  double max_err; // Maximum saturation value for the activity sensor
+  double max_scale; // Maximum scaling factor
+  double lastupdate; // Time of last activity sensor decay / spike update
+  double goal_activity; // Target firing rate  
+  double activity_integral_err; // Integral record of cell's activity divergence from target activity
+  double scalefactor; // Derived activity-dependent scaling factor, by which to multiply AMPA weights
+  ////////////////////////////////////////////////////////////////////////////////////////////////
+
   int* peconv; // IDs of E cells converging on this cell
   int econvsz; // # of E cells converging on this cell
   int* piconv; // IDs of I cells convering on this cell
@@ -127,6 +148,7 @@ typedef struct ID0 {
 } id0;
 
 // globals -- range vars must be malloc'ed in the CONSTRUCTOR
+static double activityoneovertau; // for homeostatic synaptic scaling: Store 1/tau for faster calculations
 static vpt *vp; // vp, pg, ip are used as temporary pointers
 static id0 *ip, *qp, *rp;
 static int inumcols=0;
@@ -144,6 +166,8 @@ static double *jsp, *invlp;
 static id0 *lop(), *lopr(), *getlp(); // accessed by all INTF6, get pointer from list
 static void applyEXSTDP (id0* ppo,double pospkt); // apply standard STDP from E->X cells
 static void applyIXSTDP (id0* ppo,double pospkt); // apply STDP from I->X cells
+static void applyEDOPE (id0* ppo,double pospkt); // apply DOPAMINE eligibility
+static void applyIDOPE (id0* ppo,double pospkt); // apply DOPAMINE eligibility
 static double vii[NSV];   // temp storage
 static unsigned int wwpt,wwsz,wwaz; // pointer, size for shared ww vectors
 static unsigned int sead, spikes[CTYPp], blockcnt[CTYPp]; // 'sead' vs global 'seed'/ used elsewhere
@@ -178,6 +202,10 @@ NEURON {
   RANGE invl,oinvl,WINV,invlt           :::: interval bursting params
   RANGE Vbrefrac                        
   RANGE STDAM, STDNM, STDGA             :::: specific amounts of STD for each type of synapse
+                                        :::: NB: before using STDAM,STDNM,STDGA need to debug/check
+                                        :::: for possible unintended interations with wts,_args 
+                                        :::: to make sure no interference with the weights in net_receive
+                                        ::::
   RANGE mg0                             :::: sensitivity to Mg2+, used in rates
   RANGE maxnmc                          :::: maximum NMDA 'conductance', used in rates
   GLOBAL EAM, ENM, EGA,mg               :::: "reverse potential" distance from rest
@@ -210,8 +238,26 @@ NEURON {
   GLOBAL SOFTSTDP : whether to use soft bounds for STDP
   GLOBAL EPOTW,EDEPW,IPOTW,IDEPW : STDP potentiation vs depression factors for increments
   GLOBAL nextGID : don't mess with this unless have a good reason!
+  GLOBAL EDOPE : whether using dopamine-style learning for E->X weights
+  GLOBAL IDOPE : whether using dopamine-style learning for I->X weights
+  GLOBAL DOPE : whether using dopamine-style learning
+  GLOBAL FORWELIGTR : forward (pre-to-post-synaptic propagation) eligibility traces
+  GLOBAL BACKELIGTR : backward (post-to-pre-synaptic propagation) eligibility traces
+  GLOBAL EXPELIGTR : use an exponential decay for the eligibility traces?
+  GLOBAL maxeligtrdur: maximum eligibilty trace duration (in ms)
+  GLOBAL reseteligtr : reset eligibility trace after synapse rewarded/punished  
+
+  : VARIABLES RELATING TO HOMEOSTATIC SYNAPTIC SCALING (IMPLEMENTED BY MARK ROWAN)
+  GLOBAL scaling            : Is compensatory scaling switched on for all cells? Default is off. Globally set.
+  GLOBAL dynamicdel         : Is dynamic scaling factor-proportional deletion switched on? Default is off.
+  GLOBAL delspeed           : Rate constant for spontaneous deletion (Alzheimer's experiments)
+  GLOBAL scaleinhib         : Set to TRUE (1) for I-cell scaling in addition to E-cell scaling. Default is off (0).
+  GLOBAL activitytau        : Activity time constant (ms^-1)  
+  GLOBAL activitybeta       : Scaling strength constant (s^-1 Hz^-1)
+  GLOBAL activitygamma      : Scaling update constant (s^-2 Hz^-1)
 }
 
+: PARAMETER block - sets all variables to defaults at start
 PARAMETER {
   tauAM = 10 (ms)
   tauNM = 300 (ms)
@@ -233,7 +279,7 @@ PARAMETER {
   VTH = -45      : fixed spike threshold
   VTHC = -45
   VTHR = -45
-  incRR = 1  : CK -- allow relative refractory periods to sum
+  incRR = 0
   Vblock = -20   : level of depolarization blockade
   vdt = 0.1      : time step for saving state var
   mg = 1         : for NMDA Mg dep.
@@ -279,6 +325,23 @@ PARAMETER {
   IPOTW = 1
   IDEPW = 1
   nextGID = 0
+  DOPE = 0 : no dopamine-based learning by default
+  EDOPE = 0 : no dopamine-based learning by default
+  IDOPE = 0 : no dopamine-based learning by default
+  FORWELIGTR = 1 : turn on forward eligibility traces by default
+  BACKELIGTR = 0 : turn off backward eligibility traces by default
+  EXPELIGTR = 1 : turn on exponential decay of eligibilty traces by default
+  maxeligtrdur = 100.0 : set maximum eligibility trace time to 100 ms by default
+  reseteligtr = 0 : don't reset by default
+
+  : default values for homeostatic synaptic scaling
+  scaling = 0                          : Compensatory synaptic scaling defaults to 'off'
+  dynamicdel = 0                       : Dynamic deletion defaults to 'off'
+  delspeed = 0.0                       : Rate constant for dynamic deletion
+  scaleinhib = 0                       : Whether or not we should scale I cells as well as E cells
+  activitytau = 100.0e3                : Activity sensor time constant (ms^-1) (van Rossum et al., 2000)
+  activitybeta = 4.0e-8                : was e-5 Scaling strength constant (s^-1 Hz^-1) (van Rossum et al., 2000)
+  activitygamma = 1.0e-10              : was e-7 Scaling update constant (s^-2 Hz^-1) (van Rossum et al., 2000)
 }
 
 ASSIGNED {
@@ -301,14 +364,27 @@ CONSTRUCTOR {
     _p_sop = (void*)ecalloc(1, sizeof(id0)); // important that calloc sets all flags etc to 0
     ip = IDP;
     ip->id=lid; ip->type=lty; ip->inhib=lin; ip->col=lco; 
-    ip->pg=0x0; ip->dvi=0x0; ip->sprob=0x0;  ip->syns=0x0; ip->wgain=0x0; ip->peconv=ip->piconv=0x0; ip->syw1=ip->syw2=0x0;
-    ip->pplasttau=0x0; ip->pplastinc=0x0; ip->pplastmaxw=0x0;
+    ip->pg=0x0; ip->dvi=0x0; ip->del=0x0; ip->sprob=0x0; 
+    ip->syns=0x0; ip->wgain=0x0; ip->peconv=ip->piconv=0x0; ip->syw1=ip->syw2=0x0;
+    ip->pplasttau=0x0; ip->pplastinc=0x0; ip->pplastmaxw=0x0; ip->pdope=0x0;
     ip->dead = ip->invl0 = ip->record = ip->jttr = ip->input = 0; // all flags off
     ip->dvt = ip->vbr = ip->wrec = ip->jcn = ip->out = 0;
     for (i=0;i<WRNUM;i++) {ip->wreci[i]=-1; ip->wscale[i]=-1.0;}
     ip->rve=-1;
     pathbeg=-1;
-    slowset=0; 
+    slowset=0;
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    //     THE PARAMETERS IN THIS 'BLOCK' ARE ASSOCIATED WITH HOMEOSTATIC SYNAPTIC SCAING
+    ip->activity = 0; // Sensor for this cell's recent activity (default 0MHz i.e. cycles per ms)
+    ip->max_err = 0; // Max error value
+    ip->max_scale = 100; // Max scaling factor
+    ip->lastupdate = 0; // Time of last activity sensor decay / spike update
+    ip->scalefactor = 1.0; // Default scaling factor for this cell's AMPA synapses
+    ip->goal_activity = -1; // Cell's target activity (MHz i.e. cycles per ms)
+    ip->activity_integral_err = 0.0; // Integral of cell's activity divergence from target activity
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+
     ip->gid = nextGID; nextGID += 1.0;// global identifier
     process=(int)getpid();
     CNAME[SU]="SU"; CNAME[DP]="DP"; CNAME[IN]="IN";
@@ -318,6 +394,20 @@ CONSTRUCTOR {
     } else installed=1.0; // set or reset it
     cbsv=0x0;
   }
+  ENDVERBATIM
+}
+
+PROCEDURE resetscaling () {
+  VERBATIM
+  ip = IDP;
+  //     THE PARAMETERS IN THIS 'BLOCK' ARE ASSOCIATED WITH HOMEOSTATIC SYNAPTIC SCAING
+  ip->activity = 0; // Sensor for this cell's recent activity (default 0MHz i.e. cycles per ms)
+  ip->max_err = 0; // Max error value
+  ip->max_scale = 100; // Max scaling factor
+  ip->lastupdate = 0; // Time of last activity sensor decay / spike update
+  ip->scalefactor = 1.0; // Default scaling factor for this cell's AMPA synapses
+  ip->goal_activity = -1; // Cell's target activity (MHz i.e. cycles per ms)
+  ip->activity_integral_err = 0.0; // Integral of cell's activity divergence from target activity
   ENDVERBATIM
 }
 
@@ -348,6 +438,7 @@ INITIAL { LOCAL id
   ip->pg->lastspk[ip->id]=-1;
   for (i=0;i<CTYN;i++){ix=cty[i]; blockcnt[ix]=spikes[ix]=AMo[ix]=NMo[ix]=GAo[ix]=AMo2[ix]=NMo2[ix]=GAo2[ix]=0;}
   if(seadsetting==3 && resetplast && ip->wgain) for(i=0;i<ip->dvt;i++) ip->wgain[i]=1.0; // reset learning
+  if(seadsetting==3 && ip->pdope) for(i=0;i<ip->dvt;i++) ip->pdope[i] = -1e9; // turn off eligibility trace
   }
   ENDVERBATIM
   jrsvn=jrsvd jrtime=jrtm
@@ -359,6 +450,17 @@ INITIAL { LOCAL id
     net_send(0,2) 
   } : send at time 0
   rebeg=0 : will reset this to restart storage for rec,wrec
+
+  : 
+  : SN - NB - SHOULD PROBABLY RESET AT LEAST SOME OF THE
+  : PARAMS ASSOCIATED WITH HOMEOSTATIC SYNAPTIC SCALING HERE
+  : 
+  :  Store fixed value of 1/tau - users should not modify this!!
+VERBATIM
+  activityoneovertau = 1.0 / activitytau; //@
+
+ENDVERBATIM
+  : resetscaling()
 }
 
 PROCEDURE reset () {
@@ -451,6 +553,32 @@ ENDVERBATIM
     }
   }
 
+  // MR: Synaptic scaling and deletion logic
+  if (dynamicdel) {
+    dynamicdelete(t); // Calculate probabilistically whether or not this cell should die
+  }
+  // SN - is the following line needed when not running synaptic scaling?
+  decay_activity_sensor(t); // Allow activity sensor to decay on every update
+
+  if (scaling) {
+    if (ip->goal_activity < 0) {
+      // If scaling has just been turned on, set goal activity to historical average firing rate
+      // This is only meaningful if sensor has had a chance to measure correct activity over
+      // a relatively long period of time, so don't call setscaling(1) until at least ~800s.
+      //ip->goal_activity = get_avg_activity();
+      ip->goal_activity = ip->activity; // Take current activity sensor value
+      //ip->max_err = ip->goal_activity * 0.5; // Error value saturates at +- 50% of goal activity rate
+    }
+
+    if (!ip->inhib || scaleinhib) {
+      // Only update if cell is not inhib OR we are scaling all I+E cells
+      update_scale_factor(t); // Run synaptic scaling procedure to find scalefactor
+    }  
+  }
+  ip->lastupdate = t; // Store time of last update
+  
+
+
   if (_lflag==OK) { FLAG=OK; flag(); return; } // identify internal call with errflag
   if (_lflag<0) { callback(_lflag); return; }
   pg->eventtot+=1;
@@ -489,18 +617,18 @@ ENDVERBATIM
         ppre = getlp(pg->ce,prid);  // get pointer to presynaptic cell
         if(ip->dbx<-1) printf("ppre%p,pre%d->po%d,wg=%g\n",ppre,prid,ip->id,wgain);
         if(ppre->inhib) { // only care about appropriate presynaptic cells for plasticity
-          if(!ISTDP) ppre=0x0;
+          if(!ISTDP && !IDOPE) ppre=0x0;
         } else {
-          if(!ESTDP) ppre=0x0;
+          if(!ESTDP && !EDOPE) ppre=0x0;
         }
       }
       if(ppre) { // appropriate presynaptic cell AND plasticity mode is on
         for (ii=sy,nsyn=0;ii<sy+2;ii++) {
           if(ii==AM2 || ii==AM || ii==GA || ii==GA2) { // AMPA,GABAA plasticity factor
-            if(wsetting==1.0) { // non-MATRIX weights and AMPA,GABAA plasticity
-              _args[ii] = ii == sy ? syw1 * wgain : syw2 * wgain;               
+            if(wsetting==1.0) { // non-MATRIX weights and AMPA,GABAA plasticit
+              _args[ii] = ii == sy ? syw1 * wgain : syw2 * wgain;
             } else { // MATRIX weights and AMPA/GABAA plasticity
-              _args[ii]=wgain*WMAT(prty,poty,ii)*WD0(prty,poty,ii);              
+              _args[ii]=wgain*WMAT(prty,poty,ii)*WD0(prty,poty,ii);
             }
             if(ip->dbx<-1) printf("pre%d->po%d,sy=%d,wg=%g,w=%g\n",prid,ip->id,ii,wgain,_args[ii]);
           } else { // non-AMPA/non-GABAA -->> no plasticity applied
@@ -522,6 +650,37 @@ ENDVERBATIM
         }
       }
       if (nsyn==0) return; //return for 0-weight events, before changing state vars or Vm
+
+      // *** Do synaptic scaling
+      if (scaling) {
+        for (ii=sy,nsyn=0;ii<sy+2;ii++) {
+          if (!ip->inhib) {
+            // Scale E cell
+            if (ii==AM2 || ii==AM) { // || ii==NM || ii == NM2) {
+              // Scale AMPA receptors by scalefactor (Turrigiano, 2008)
+              _args[ii] *= ip->scalefactor;
+            }
+            if (ii==GA || ii==GA2) {
+              // Scale GABA receptors by 1/scalefactor to model BDNF (Chandler and Grossberg, 2012)
+              _args[ii] *= 1 / ip->scalefactor;
+            }
+          } else {
+            // Scale I cell
+            // Scaling has opposite effects on I cells (if scaling is enabled for I cells)
+            if (ii==AM2 || ii==AM) { // || ii==NM || ii == NM2) {
+              // Scale I-cell AMPA receptors by 1/scalefactor
+              _args[ii] *= 1 / ip->scalefactor;
+            }
+            if (ii==GA || ii==GA2) {
+              // Scale I-cell GABA receptors by scalefactor
+              _args[ii] *= ip->scalefactor;
+            }
+
+          }
+        }
+      }
+      // *** Done synaptic scaling
+
       if (seadsetting==3) { // empty 'if' to skip next clause
       } else if (seadsetting!=2) { // not fixed weights
         if (seadsetting==1) {
@@ -648,7 +807,7 @@ ENDVERBATIM
   if (flag==0 || flag>=FOFFSET) { 
 
     : AMPA Erev=0 (0-RMP==65 mV above rest)
-    if (wAM>0) {      
+    if (wAM>0) {
       if (STDAM==0) { VAM = VAM + wAM*(1-Vm/EAM)
       } else        { VAM = VAM + (1-STDAM*STDf)*wAM*(1-Vm/EAM) }
       if (VAM>EAM) { 
@@ -658,7 +817,7 @@ VERBATIM
 ENDVERBATIM
       } else if (VAM<0) { VAM=0 }
     }
-    if (wAM2>0) { : AMPA from distal dends      
+    if (wAM2>0) { : AMPA from distal dends
       if (STDAM==0) { VAM2 = VAM2 + wAM2*(1-Vm/EAM)
       } else        { VAM2 = VAM2 + (1-STDAM*STDf)*wAM2*(1-Vm/EAM) }
       if (VAM2>EAM) { 
@@ -844,7 +1003,10 @@ ENDVERBATIM
     }
     if (WEX!=-1e9) { : code for single shock
       randspk() : will set WEX for next time
-      if (nxt>0) { net_send(nxt,2) }
+VERBATIM
+      if (ip->input) 
+ENDVERBATIM
+{ net_send(nxt,2) } 
     }
   } else if (flag==3) { 
     refractory = 0 :end of absolute refractory period    
@@ -857,7 +1019,7 @@ ENDVERBATIM
 :** check for Vm>VTH -> fire
   Vm = VAM+VNM+VGA+RMP+AHP+VAM2+VNM2+VGA2 : WARNING -- Vm defined differently than above
   if (Vm>0)   {Vm= 0 }
-  if (Vm<-90) {Vm=-90}
+  if (Vm<-90) {Vm=-90}  
   if (refractory==0 && Vm>VTHC) {
 VERBATIM
     if (!ip->vbr && Vm>Vblock) {//@ do nothing
@@ -883,6 +1045,10 @@ VERBATIM
 
 ENDVERBATIM
 VERBATIM
+    raise_activity_sensor(t); //@ Update activity sensor
+
+ENDVERBATIM
+VERBATIM
     ip->pg->lastspk[ip->id]=_ltmp; //@
 
 ENDVERBATIM
@@ -901,7 +1067,7 @@ VERBATIM
     spikes[ip->type]++; //@
 
 ENDVERBATIM
-    spck=spck+1
+    spck=spck+1            
 VERBATIM
     if (ip->dbx>0) 
 ENDVERBATIM
@@ -916,7 +1082,7 @@ ENDVERBATIM
 { wrecord(tmp) } 
     if(incRR) { : additive
       VTHC=VTHC+RRWght*(Vblock-VTH):increase threshold for relative refrac. period. NB: RRWght can be < 0
-      : if(VTHC > Vblock) {VTHC=Vblock} else if(VTHC < RMP) {VTHC=RMP} : CK: removed
+      if(VTHC > Vblock) {VTHC=Vblock} else if(VTHC < RMP) {VTHC=RMP}
     } else { : non-additive
       VTHC=VTH+RRWght*(Vblock-VTH):increase threshold for relative refrac. period. NB: RRWght can be < 0
     }
@@ -937,6 +1103,14 @@ VERBATIM
         if(ISTDP) applyIXSTDP(ip,ip->pg->lastspk[ip->id]); //@
 
 ENDVERBATIM
+VERBATIM
+        if(EDOPE) applyEDOPE(ip,ip->pg->lastspk[ip->id]); //@
+
+ENDVERBATIM
+VERBATIM
+        if(IDOPE) applyIDOPE(ip,ip->pg->lastspk[ip->id]); //@
+
+ENDVERBATIM
       }
     }
 
@@ -948,12 +1122,12 @@ VERBATIM
 ENDVERBATIM
     } 
 VERBATIM
-    if (ip->vbr && Vm>Vblock) 
+  if (ip->vbr && Vm>Vblock) 
 ENDVERBATIM
 { 
       net_send(Vbrefrac,3) 
 VERBATIM
-      if (ip->dbx>0) 
+     if (ip->dbx>0) 
 ENDVERBATIM
 {pid() printf("DBE: %g %g\n",Vbrefrac,Vm)} 
 VERBATIM
@@ -993,7 +1167,7 @@ PROCEDURE jitcon (tm) {
       spkstats2(1.);
     }
   } else if (jrsvd>0 && pg->jri>jrsvn) { 
-    jrsvn+=jrsvd; printf("time=%.02f %ld ",t,ip->pg->jri);
+    jrsvn+=jrsvd; printf("t=%.02f %ld ",t,ip->pg->jri);
     spkstats2(1.);
   }
   prty=(int)ip->type;
@@ -1053,30 +1227,28 @@ PROCEDURE callhoc () {
 : flag 1 means print it to a file, 2 means to both places
 PROCEDURE spkstats2 (flag) {
 VERBATIM {
-  int i, ix, flag, totalspks; double clk;
+  int i, ix, flag; double clk;
   ip=IDP; pg=ip->pg;
   flag=(int)(_lflag+1e-6);
   clk=clock()-savclock; savclock=clock();
   if (cbsv) hoc_call_func(cbsv,0);
-
-  totalspks=0; // CK: Reset total number of spikes
-  for (i=0;i<CTYN;i++) totalspks+=spikes[cty[i]]; // Calculate total number of spikes
-
-  if (tf) fprintf(tf,"t=%.00f\tspikes: %d;\t",t,totalspks); else { // Time and number of spikes
-    printf("t=%.00f\tspikes: %d;\t",t,totalspks); }
+  if (tf) fprintf(tf,"t=%.02f;%ld(%g) ",t,pg->jri,clk/1e6); else {
+    printf("t=%.02f;%ld(%g) ",t,pg->jri,clk/1e6); }
   for (i=0;i<CTYN;i++) {
     ix=cty[i];
-    pg->spktot+=spikes[ix]; // CK: shortened output to just firing rates
+    pg->spktot+=spikes[ix];
     if (tf) {
-      fprintf(tf,"%s:%d\t",CNAME[i],spikes[ix]);
+      fprintf(tf,"%s:%d/%d:%d;%d;%d;%d;%d;%d ",CNAME[i],spikes[ix],\
+              blockcnt[ix],AMo[ix],NMo[ix],GAo[ix],AMo2[ix],NMo2[ix],GAo2[ix]);
     } else {
-      printf("%s:%d\t",CNAME[i],spikes[ix]);
+      printf("%s:%d/%d:%d;%d;%d;%d;%d;%d ",CNAME[i],spikes[ix],blockcnt[ix],\
+             AMo[ix],NMo[ix],GAo[ix],AMo2[ix],NMo2[ix],GAo2[ix]);
     }
     spck=0;
     blockcnt[ix]=spikes[ix]=0;
     AMo[ix]=NMo[ix]=GAo[ix]=AMo2[ix]=NMo2[ix]=GAo2[ix]=0;
   }
-  if (tf && flag==2) {  fprintf(tf,"\ntime=%g tot_spks: %ld; tot_events: %ld\n",t,pg->spktot,pg->eventtot); 
+  if (tf && flag==2) {  fprintf(tf,"\nt=%g tot_spks: %ld; tot_events: %ld\n",t,pg->spktot,pg->eventtot); 
   } else if (flag==2) {  printf("\ntotal spikes: %ld; total events: %ld\n",pg->spktot,pg->eventtot); 
   } else if (tf) fprintf(tf,"\n"); else printf("\n");
 }
@@ -1105,15 +1277,18 @@ PROCEDURE callback (fl) {
   while (ddel<=DELMIN) { // check if this del is worth waiting, else just send now
     if (Vblock<VTHC) { 
       wts[0]=0; // send [0,1] for STD
-    } else { // STDf=(1-STD)
+    } else if(STDAM || STDNM || STDGA) { // STDf=(1-STD) , ONLY SET wts[0] WHEN SHORT-TERM FACIL. ON
+                                                         //NB: WTS IS TOO OVERUSED, CONFUSING!!!!!!!!!!!
+                                                         //if anyone uses STD they should make sure doesn't
+                                                         //cause problems in wts, _args !!!
       wts[0]=(VTHC-VTH)/(Vblock-VTH); // just send [0,1] for STD
     }
     wts[1]=0.0; // default is no plasticity gain
     if(seadsetting==3) { // check if should send plasticity gain
       if(jp->inhib) {
-        if(ISTDP) wts[1]=jp->wgain[i];
+        if(ISTDP || IDOPE) wts[1]=jp->wgain[i];
       } else {
-        if(ESTDP) wts[1]=jp->wgain[i];
+        if(ESTDP || EDOPE) wts[1]=jp->wgain[i];
       }
     }
     if(wsetting==1.0 && jp->syw1 && jp->syw2) {wts[2]=jp->syw1[i]; wts[3]=jp->syw2[i]; } // non-MATRIX weights?
@@ -1122,7 +1297,7 @@ PROCEDURE callback (fl) {
     if (jp->sprob[i]) (*pnt_receive[jp->dvi[i]->_prop->_type])(jp->dvi[i], wts, idtflg); 
     _p=upnt->_prop->param; _ppvar=upnt->_prop->dparam; // restore pointers
     i++;
-    if (i>=jp->dvt) return; // ran out
+    if (i>=jp->dvt) return 0; // ran out
     ddel=jp->del[i]-del0;   // delays are relative to event; use difference in delays
   }
   // skip over pruned outputs and dead cells:
@@ -1146,7 +1321,7 @@ VERBATIM {
   int i,j,k,prty,poty,dv,dvt,dvii; double *x, *db, *dbs; 
   Object *lb;  Point_process *pnnt, **da, **das;
   ip=IDP; pg=ip->pg;//this should only be called after jitcondiv()
-  if (ip->dead) return;
+  if (ip->dead) return 0;
   prty=ip->type;
   sead=GetDVIDSeedVal(ip->id);//seed for divergence and delays
   for (i=0,k=0,dvt=0;i<CTYN;i++) { // dvt gives total divergence
@@ -1269,7 +1444,7 @@ FUNCTION getdvi () {
     void* voi, *voi2,*voi3; Point_process **das;
     ip=IDP; pg=ip->pg;
     getactive=a2=a3=a4=0;
-    if (ip->dead) return;
+    if (ip->dead) return 0.0;
     dvt=ip->dvt; 
     dbs=ip->del;   das=ip->dvi;
     _lgetdvi=(double)dvt; 
@@ -1311,8 +1486,8 @@ FUNCTION getdvi () {
         if(wsetting==1) { // non-wmat weights
           y[0]=ip->syw1[i]; y[1]=ip->syw2[i];
         } else {
-          if (seadsetting==2) { // no randomization
-          for(ii=0;ii<2;ii++) y[ii]=WMAT(prty,poty,sy+ii)*WD0(prty,poty,sy+ii);
+          if (seadsetting==2 || seadsetting==3) { // no randomization [or plasticity (also no randomization)]
+            for(ii=0;ii<2;ii++) y[ii]=WMAT(prty,poty,sy+ii)*WD0(prty,poty,sy+ii);
           } else {
             if (seadsetting==1) { // old sead setting
               sead=(unsigned int)(FOFFSET+ip->id)*qp->id*seedstep; 
@@ -1328,7 +1503,7 @@ FUNCTION getdvi () {
         x4[j]=y[0]; x5[j]=y[1];
       }
       if (a6) x6[j] = ip->syns[i];  // distal / prox syns
-      if (a7 && ip->wgain) x7[j] = ip->wgain[i]; // weight gain as from plasticity
+      if (a7 && ip->wgain)x7[j]=ip->wgain[i];//weight gain from plasticity (stored separately from starting weight)
       j++;
     }
     if (flag!=2 && j!=dvt) for (i=av1;i<iarg;i++) vector_resize(vector_arg(i),j);
@@ -1551,39 +1726,53 @@ PROCEDURE clrdvi () {
     if (qp->dvt!=0x0) {
       free(qp->dvi); free(qp->del); free(qp->sprob);
       qp->dvt=0; qp->dvi=(Point_process**)0x0; qp->del=(double*)0x0; qp->sprob=(char *)0x0;
+      if(wsetting==1) freesywv(qp);
     }
   }
   ENDVERBATIM
 }
 
-: int.setdviv(prevec,postvec,delvec)
-FUNCTION setdviv () {
+: int.setdviv(prevec,postvec,delvec,distal,wt1,wt2)
+PROCEDURE setdviv () {
   VERBATIM
-  int i,j,k,l,nprv,dvt; double *prv,*pov,*dlv,x,*ds; char* s;
+  int i,j,k,l,nprv,dvt,*scr; double *prv,*pov,*dlv,x,*ds,*w1,*w2; char* s;
   ip=IDP; pg=ip->pg;
   nprv=vector_arg_px(1, &prv);
   i=vector_arg_px(2, &pov);
   j=vector_arg_px(3, &dlv);
-  s-0x0;
-  if(ifarg(4)) { s=(char*)calloc((l=vector_arg_px(4,&ds)),sizeof(char)); for(k=0;k<l;k++) s[k]=ds[k]; k=0;}
-  if (nprv!=i || i!=j) {printf("intf:setdviv ERRA: %d %d %d\n",nprv,i,j); hxe();}
+  if(ifarg(4)) { s=(char*)calloc((l=vector_arg_px(4,&ds)),sizeof(char)); for(k=0;k<l;k++) s[k]=ds[k]; k=0;
+  } else s=0x0;
+  if (nprv!=i || i!=j || j!=l) {printf("intf:setdviv ERRA: %d %d %d %d\n",nprv,i,j,l); hxe();}
+  if (wsetting==1) {
+    i=vector_arg_px(5, &w1);
+    j=vector_arg_px(6, &w2);
+    if (nprv!=i || i!=j) {printf("intf:setdviv ERRB: %d %d %d\n",nprv,i,j); hxe();}
+  }
   // start by counting the prids so will know the size that we need for realloc()
-  if (scrsz<pg->cesz) scrset(pg->cesz); 
+  scr=(int *)ecalloc(pg->cesz, sizeof(int));
   for (i=0;i<pg->cesz;i++) scr[i]=0;
   for (i=0,j=-1;i<nprv;i++) {
-    if (j>(int)prv[i]){printf("intf:setdviv ERRA vecs should be sorted by prid vec\n");hxe();}
+    if ((int)prv[i]<j) { printf("intf:setdviv ERRC vecs should be sorted by prid vec\n");hxe(); }
     j=(int)prv[i];
     scr[j]++;
   }
-  for (i=0,x=-1,k=0;i<nprv;i+=dvt) { if(i%1000==0) printf(".");
-    if (prv[i]!=x) lop(pg->ce,(unsigned int)(x=prv[i]));
+  if (ip->dbx>1) for (i=0;i<pg->cesz;i++) printf("%d ",scr[i]);
+  for (i=-1,k=0;k<nprv;k+=dvt) { if(i%1000==0) printf(".");
+    if ((int)prv[k]==i) {printf("intf:setdviv ERRD number repeated %g %d %d\n",prv[k],i,k);hxe();}
+    i=(int)prv[k]; // index for presyn cell
+    lop(pg->ce,i); // set the container to that cell
+    dvt=scr[i]; // the number of postsyns for that
+    if (ip->dbx>0) printf("DBA:%d,%d,%d ",i,dvt,k);
     if (qp->dead) continue;
-    dvt=scr[(int)x]; // number of these presyns
-    setdvi2(pov+k,dlv+k,s?s+k:0x0,dvt,1,0x0,0x0);
-    k+=dvt;
+    if (dvt>0) {
+      if (wsetting==1) {
+        setdvi3(pov+k,dlv+k,s+k,dvt,w1+k,w2+k); // no flag -- will just replace the divergence list
+      } else {
+        setdvi2(pov+k,dlv+k,s?s+k:0x0,dvt,1,0x0,0x0);
+      }
+    }
   }
   if(s) free(s);
-  return (double)k;
   ENDVERBATIM
 }
 
@@ -1649,7 +1838,7 @@ VERBATIM
 int* getpeconv (id0* ip,int* psz) {
   Point_process **das; int* pfrom;
   int i,j,k,dvt;
-  *psz=ip->dvt; pg=ip->pg;
+  *psz=ip->dvt>0?ip->dvt:16; pg=ip->pg;
   pfrom=(int*) calloc(psz[0],sizeof(int));
   for (i=0,k=0; i<pg->cesz; i++) {
     lop(pg->ce,i);
@@ -1676,7 +1865,7 @@ int* getpeconv (id0* ip,int* psz) {
 int* getpiconv (id0* ip,int* psz) {
   Point_process **das; int* pfrom;
   int i,j,k,dvt;
-  *psz=ip->dvt; pg=ip->pg;
+  *psz=ip->dvt>0?ip->dvt:16; pg=ip->pg;
   pfrom=(int*) calloc(psz[0],sizeof(int));
   for (i=0,k=0; i<pg->cesz; i++) {
     lop(pg->ce,i);
@@ -1708,6 +1897,81 @@ int myfindidx (id0* ppre,int poid) {
     if(ppo->id==poid) return i;
   }
   return -1;
+}
+
+// apply dopamine eligibility trace from E->X cells
+// pcell is a cell that just spiked, myspkt is time of spike
+static void applyEDOPE (id0* pcell,double myspkt) {
+  int poid,prid,sz,i,idx; postgrp* pg; double d,inc,tmp,pinc,tau,maxw; id0* ppre, *ppo;
+  if(seadsetting!=3.) return; // seadsetting==3 for EDOPE, must be set before network setup
+  poid=pcell->id; pg=pcell->pg;
+  if(pcell->dbx<-1) printf("applyEDOPE: pcell=%p\n",pcell);
+  if (FORWELIGTR) {  // if forward eligibility traces are turned on (post after pre)
+    for(i=0;i<pcell->econvsz;i++) {//check presynaptic E cells, if they fired within   maxplastt turn on eligibility trace
+      prid = pcell->peconv[i];                // presynaptic id
+      if(pg->lastspk[prid]<0) continue;     // cell didn't spike
+      if( (d = myspkt - pg->lastspk[prid] ) > maxplastt) continue;  // time difference
+      if(verbose>2) printf("spk%d:%g, spk%d:%g, d=%g\n",prid,pg->lastspk[prid],poid,pg->lastspk[poid],d);
+      ppre = getlp(pg->ce,prid);            // get pointer to presynaptic cell
+      idx = myfindidx(ppre,poid);           // find the index of poid in ppre's div
+      if(idx<0){printf("**** applyEDOPE ERR: bad idx = %d!!!!!!!!!\n",idx); return;}
+      if( ! ( inc = ppre->pplastinc[idx] ) ) continue; 
+      ppre->pdope[idx] = t; // store time elig. trace turned on
+      if(verbose>2) printf("EDOPEA:ppre->inhib=%d,pcell->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d\n",ppre->inhib,pcell->inhib,d,tau,d/tau,prid,poid);
+    }
+  }
+  if (BACKELIGTR) { // if backward eligibility traces are turned on (pre after post)
+    if(pcell->inhib) return; // only EDOPE from E cells
+    for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if they fired within maxplastt, turn on eligibility trace
+      ppo=*((id0**) &((pcell->dvi[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+      poid = ppo->id;
+      if(pg->lastspk[poid]<0) continue;
+      if( (d = myspkt - pg->lastspk[poid] ) <= maxplastt) {
+        if( ! ( inc = pcell->pplastinc[i] ) ) continue;
+        pcell->pdope[i] = -t; // store time elig. trace turned on, -t means it was post-before-pre
+        if(verbose>2) printf("EDOPEB:ppo->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d\n",ppo->inhib,d,tau,d/tau,prid,poid);
+      }    
+    } 
+  }
+}
+
+// apply dopamine eligibility trace from I->X cells
+// pcell is a cell that just spiked, myspkt is time of spike
+// GLC, 1/12/12 -- It's not really clear to me how eligibility traces should be 
+// implemented in the case of I->X connections.  Until we've done more literature 
+// search on this, I think we should avoid using DA learning on I->X connections.
+static void applyIDOPE (id0* pcell,double myspkt) {
+  int poid,prid,sz,i,idx; postgrp* pg; double d,inc,tmp,pinc,tau,maxw; id0* ppre, *ppo;
+  if(seadsetting!=3.) return; // seadsetting==3 for IDOPE, must be set before network setup
+  poid=pcell->id; pg=pcell->pg;
+  if(pcell->dbx<-1) printf("applyplast: pcell=%p\n",pcell);
+  if (FORWELIGTR) {  // if forward eligibility traces are turned on (post after pre)
+    for(i=0;i<pcell->iconvsz;i++) {//check presynaptic I cells, if they fired earlier, depress synapse
+      prid = pcell->piconv[i];                // presynaptic id
+      if(pg->lastspk[prid]<0) continue;     // cell didn't spike
+      if( (d = myspkt - pg->lastspk[prid] ) > maxplastt) continue;  // time difference
+      if(verbose>2) printf("spk%d:%g, spk%d:%g, d=%g\n",prid,pg->lastspk[prid],poid,pg->lastspk[poid],d);
+      ppre = getlp(pg->ce,prid);            // get pointer to presynaptic cell
+      idx = myfindidx(ppre,poid);           // find the index of poid in ppre's div
+      if(idx<0){printf("**** applyISSTDP ERR: bad idx = %d!!!!!!!!!\n",idx); return;}
+      if( ! ( inc = ppre->pplastinc[idx] ) ) continue; 
+      ppre->pdope[idx] = t; // store time elig. trace turned on
+      if(verbose>2) printf("IDOPEA:ppre->inhib=%d,pcell->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d\n",ppre->inhib,pcell->inhib,d,tau,d/tau,prid,poid);
+    }
+  }
+  if(BACKELIGTR) { // if backward eligibility traces are turned on (pre after post)
+    if(!pcell->inhib) return; // IDOPE only from I cells
+    for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if within maxplastt, 
+      ppo=*((id0**) &((pcell->dvi[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+      poid = ppo->id;
+      if(pg->lastspk[poid]<0) continue;
+      if( (d = myspkt - pg->lastspk[poid] ) <= maxplastt) {
+        if( ! ( inc = pcell->pplastinc[i] ) ) continue;
+        pcell->pdope[i] = -t; // store time elig. trace turned on, -t means it was post-before-pre
+        if(verbose>2) printf("IDOPEB:ppo->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d\n",ppo->inhib,d,tau,d/tau,prid,poid);
+      }    
+    }
+  }
 }
 
 // apply plasticity from E->X cells
@@ -1777,7 +2041,7 @@ static void applyIXSTDP (id0* pcell,double myspkt) {
     ppre->wgain[idx] -= IDEPW * inc * exp( -d / tau ); // increment the wgain of the synapse
     if(ppre->wgain[idx]<0.) ppre->wgain[idx]=0.; // check bounds of wgain
     else if(!SOFTSTDP && ppre->wgain[idx]>maxw) ppre->wgain[idx]=maxw;
-    if(verbose>2) printf("PLAST:ppre->inhib=%d,pcell->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d: inc=%g, wgA=%g, wgB=%g\n",ppre->inhib,pcell->inhib,d,tau,d/tau,prid,poid,inc,tmp,ppre->wgain[idx]);
+    if(verbose>2) printf("DEP:ppre->inhib=%d,pcell->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d: inc=%g, wgA=%g, wgB=%g\n",ppre->inhib,pcell->inhib,d,tau,d/tau,prid,poid,inc,tmp,ppre->wgain[idx]);
   }
   if(!pcell->inhib) return; // this STDP only from I cells
   for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if they fired earlier, potentiate the synapse
@@ -1793,7 +2057,7 @@ static void applyIXSTDP (id0* pcell,double myspkt) {
       pcell->wgain[i] += IPOTW * inc * exp( -d / tau ); // increment the wgain of the synapse
       if(pcell->wgain[i]<0.) pcell->wgain[i]=0.; // check bounds of wgain
       else if(!SOFTSTDP && pcell->wgain[i]>maxw) pcell->wgain[i]=maxw;
-      if(verbose>2) printf("DEP:ppo->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d: inc=%g, wgA=%g, wgB=%g\n",ppo->inhib,d,tau,d/tau,prid,poid,inc,tmp,pcell->wgain[i]);
+      if(verbose>2) printf("PLAST:ppo->inhib=%d,d=%g,tau=%g,d/tau=%g, %d->%d: inc=%g, wgA=%g, wgB=%g\n",ppo->inhib,d,tau,d/tau,prid,poid,inc,tmp,pcell->wgain[i]);
     }    
   }
 }
@@ -1861,6 +2125,7 @@ static int finishdvi2 (struct ID0* p) {
     p->pplasttau = (double*)realloc((void*)p->pplasttau,(size_t)dvt*sizeof(double));
     p->pplastinc = (double*)realloc((void*)p->pplastinc,(size_t)dvt*sizeof(double));
     p->pplastmaxw = (double*)realloc((void*)p->pplastmaxw,(size_t)dvt*sizeof(double));
+    if(DOPE) p->pdope = (double*)realloc((void*)p->pdope,(size_t)dvt*sizeof(double));
   }
 }
 ENDVERBATIM
@@ -1928,9 +2193,9 @@ FUNCTION getplast () {
 PROCEDURE setdvi () {
 VERBATIM {
   int i,j,k,dvt,flag; double *d, *y, *ds, *w1, *w2; char* s;
-  if (! ifarg(1)) {printf("setdvi(v1,v2[,v3,flag]): v1:cell#s; v2:delays; v3:distal synapses\n"); return; }
+  if (! ifarg(1)) {printf("setdvi(v1,v2[,v3,flag]): v1:cell#s; v2:delays; v3:distal synapses\n"); return 0; }
   ip=IDP; pg=ip->pg; // this should only be called after jitcondiv()
-  if (ip->dead) return;
+  if (ip->dead) return 0;
   dvt=vector_arg_px(1, &y);
   i=vector_arg_px(2, &d);
   s=ifarg(3)?(char*)calloc((j=vector_arg_px(3,&ds)),sizeof(char)):0x0;
@@ -1947,7 +2212,7 @@ ENDVERBATIM
 }
 
 VERBATIM
-// setdvi2(divid_vec,del_vec,syns_vec,div_cnt,flag)
+// setdvi2(divid_vec,del_vec,syns_vec,div_cnt,flag,w1,w2)
 // flag 1 means just augment, 0or2: sort by del, 0: clear lists and replace
 static int setdvi2 (double *y,double *d,char* s,int dvt,int flag,double* w1,double* w2) {
   int i,j,ddvi; double *db, *dbs, *w1s, *w2s; unsigned char pdead; unsigned int b,e; char* syns;
@@ -1968,13 +2233,14 @@ static int setdvi2 (double *y,double *d,char* s,int dvt,int flag,double* w1,doub
       if(ip->pplasttau){free(ip->pplasttau);ip->pplasttau=0x0;}
       if(ip->pplastinc){free(ip->pplastinc);ip->pplastinc=0x0;}
       if(ip->pplastmaxw){free(ip->pplastmaxw);ip->pplastmaxw=0x0;}
+      if(ip->pdope){free(ip->pdope);ip->pdope=0x0;}
       if(wsetting==1) freesywv(ip);
     } // make sure all null pointers for realloc
   } else { 
     if (ip->dvt==0) {
       ip->dvi=(Point_process**)0x0; ip->del=(double*)0x0; ip->sprob=(char *)0x0; ip->syns=(char*)0x0;
       ip->wgain=0x0; ip->peconv=0x0; ip->piconv=0x0;
-      ip->pplasttau=0x0; ip->pplastinc=0x0; ip->pplastmaxw=0x0;
+      ip->pplasttau=0x0; ip->pplastinc=0x0; ip->pplastmaxw=0x0; ip->pdope=0x0;
       if(wsetting==1) freesywv(ip);
     }
     b=ip->dvt; 
@@ -2013,6 +2279,36 @@ static int setdvi2 (double *y,double *d,char* s,int dvt,int flag,double* w1,doub
 }
 ENDVERBATIM
 
+VERBATIM
+// setdvi3(divid_vec,del_vec,syns_vec,div_cnt,w1,w2)
+// based on setdvi2() but uses qp statt IDP and does reallocs
+static int setdvi3 (double *y, double *d, char* s, int dvt, double* w1, double* w2) {
+  int i,j,ddvi; double *db, *dbs, *w1s, *w2s; unsigned char pdead; unsigned int b,e; char* syns;
+  Object *lb; Point_process *pnnt, **da, **das;
+  ddvi=(int)DEAD_DIV;
+  ip=qp; pg=ip->pg;
+  e=dvt; // begin to end
+  da=(Point_process **)realloc((void*)ip->dvi,(size_t)(e*sizeof(Point_process *)));
+  db=(double*)realloc((void*)ip->del,(size_t)(e*sizeof(double)));
+  syns=(char*)realloc((void*)ip->syns,(size_t)(e*sizeof(char)));  
+  w1s=(double*)realloc((void*)ip->syw1,(size_t)(e*sizeof(double)));
+  w2s=(double*)realloc((void*)ip->syw2,(size_t)(e*sizeof(double)));
+  for (i=0,j=0;j<dvt;i++,j++) { // i thru da[] j thru y, k to append
+    // div can grow at lower rate if dead cells are encountered
+    if (!(lb=ivoc_list_item(pg->ce,(unsigned int)y[j]))) {
+      printf("INTF6:callback %g exceeds %d for list ce\n",y[j],pg->cesz); hxe(); }
+      pnnt=(Point_process *)lb->u.this_pointer;
+      if (ddvi==1 || !(pdead=(*(id0**)&(pnnt->_prop->dparam[2]))->dead)) {
+        da[i]=pnnt; db[i]=d[j]; syns[i]=s?s[j]:0; 
+        w1s[i]=w1[j]; w2s[i]=w2[j];
+      }
+  }
+  ip->dvt=dvt; ip->del=db; ip->dvi=da; ip->syns=syns;
+  ip->syw1=w1s; ip->syw2=w2s;
+  finishdvi2(ip); // do sort
+}
+ENDVERBATIM
+
 : prune(p[,potype,rand_seed]) // prune synapses with prob p [0,1], ie 0.1 prunes 10% of the divergence
 : prune(vec) // fill in the pruning vec with binary values from vec
 PROCEDURE prune () {
@@ -2028,7 +2324,7 @@ PROCEDURE prune () {
       printf("INTF6pruneB:Div exceeds dscrsz: %d>%d\n",ip->dvt,dscrsz); hxe(); }
     if (p==0.) {
       for (j=0;j<ip->dvt;j++) ip->sprob[j]=1; // unprune completely
-      return; // now that unpruning is done, can return
+      return 0; // now that unpruning is done, can return
     }
     potype=ifarg(2)?(int)*getarg(2):-1;
     sead=(ifarg(3))?(unsigned int)*getarg(3):GetDVIDSeedVal(ip->id);//seed for divergence and delays
@@ -2134,23 +2430,28 @@ int gsort5 (double *db, Point_process **da, char* syns, double* w1,double* w2, i
     w2s[i]=w2[scr[i]];
   }
 }
+
+static int freedvi2 (struct ID0* jp) {
+  if (jp->dvi) {
+    free(jp->dvi); free(jp->del); free(jp->sprob); free(jp->syns);
+    if(jp->wgain){free(jp->wgain); jp->wgain=0x0;}
+    if(jp->peconv){free(jp->peconv); jp->peconv=0x0;}
+    if(jp->piconv){free(jp->piconv); jp->piconv=0x0;}
+    if(ip->pplasttau){free(ip->pplasttau);ip->pplasttau=0x0;}
+    if(ip->pplastinc){free(ip->pplastinc);ip->pplastinc=0x0;}
+    if(ip->pplastmaxw){free(ip->pplastmaxw);ip->pplastmaxw=0x0;}
+    if(ip->pdope){free(ip->pdope);ip->pdope=0x0;}
+    jp->dvt=0; jp->dvi=(Point_process**)0x0; jp->del=(double*)0x0; jp->sprob=(char *)0x0; jp->syns=(char *)0x0;
+  }
+}
 ENDVERBATIM
 
 PROCEDURE freedvi () {
   VERBATIM
   { 
-    int i, poty; id0 *jp;
+    id0 *jp;
     jp=IDP;
-    if (jp->dvi) {
-      free(jp->dvi); free(jp->del); free(jp->sprob); free(jp->syns);
-      if(jp->wgain){free(jp->wgain); jp->wgain=0x0;}
-      if(jp->peconv){free(jp->peconv); jp->peconv=0x0;}
-      if(jp->piconv){free(jp->piconv); jp->piconv=0x0;}
-      if(ip->pplasttau){free(ip->pplasttau);ip->pplasttau=0x0;}
-      if(ip->pplastinc){free(ip->pplastinc);ip->pplastinc=0x0;}
-      if(ip->pplastmaxw){free(ip->pplastmaxw);ip->pplastmaxw=0x0;}
-      jp->dvt=0; jp->dvi=(Point_process**)0x0; jp->del=(double*)0x0; jp->sprob=(char *)0x0; jp->syns=(char *)0x0;
-    }
+    freedvi2(jp);
   }
   ENDVERBATIM
 }
@@ -2222,6 +2523,63 @@ PROCEDURE mywmatpr () {
 }
 
 
+: intf.cinit() is alternative to jitcondiv() that just sets up cell specific params
+PROCEDURE cinit () {
+  VERBATIM {
+  Symbol *sym; int i,j; unsigned int sz,colid; char *name;
+
+  pg=(postgrp *)calloc(1,sizeof(postgrp));
+  colid = (int)*getarg(2);
+
+  if(ppg==0x0) { // initial allocation
+    ippgbufsz = 5;
+    ppg = (postgrp**) calloc(ippgbufsz,sizeof(postgrp*));
+    inumcols = 1;
+  } else inumcols++;
+
+  if(inumcols >= ippgbufsz) { // need more memory? then realloc
+    ippgbufsz *= 2;
+    ppg = realloc((void*)ppg,(size_t)ippgbufsz*sizeof(postgrp*));
+  }
+  ppg[inumcols-1] = pg;
+  pg->col = colid;
+  pg->ce =  *hoc_objgetarg(1);
+
+  sym = hoc_lookup("CTYP"); 
+  CTYP = (*(hoc_objectdata[sym->u.oboff].pobj));
+
+  if (installed==2.0) { // jitcondiv was previously run
+    sz=ivoc_list_count(pg->ce);
+    if (sz==pg->cesz && colid==0) printf("\t**** INTF6 WARNING cesz unchanged: INTF6(s) created off-list ****\n");
+  } else installed=2.0;
+  pg->cesz = ivoc_list_count(pg->ce); if(verbose) printf("cesz=%d\n",pg->cesz);
+  pg->lastspk = calloc(pg->cesz,sizeof(double)); // last spike time of each cell
+  // not column specific
+  CTYPi=HVAL("CTYPi"); STYPi=HVAL("STYPi"); dscrsz=HVAL("scrsz"); dscr=HPTR("scr");
+  // column specific
+  pg->ix = hoc_pgetarg(3);
+  pg->ixe = hoc_pgetarg(4);
+  pg->numc = hoc_pgetarg(5); // numc
+  if(verbose){printf("CTYPi=%d\n",CTYPi);
+    for(i=0;i<CTYPi;i++) printf("ix[%d]=%g, ixe[%d]=%g\n",i,pg->ix[i],i,pg->ixe[i]);}
+  if (!pg->ce) {printf("INTF6 cinit() ERRA: ce not found\n"); hxe();}
+  if (ivoc_list_count(CTYP)!=CTYPi){
+    printf("INTF6 cinit() ERRB: %d %d\n",ivoc_list_count(CTYP),CTYPi); hxe(); }
+  for (i=0;i<pg->cesz;i++) { lop(pg->ce,i); qp->pg=pg; } // set all of the pg pointers for now
+  printf("Checking for possible seg error in double arrays: CTYPi==%d: ",CTYPi);
+  printf("%d %g\n",dscrsz,dscr[dscrsz-1]); // scratch area for doubles
+  for (i=0,j=0;i<CTYPi;i++) if (ctt(i,&name)!=0) {
+    cty[j]=i; CNAME[j]=name; ctymap[i]=j;
+    j++;
+    if (j>=CTYPp) {printf("jitcondiv() INTERRA\n"); hxe();}
+  }
+  CTYN=j; // number of cell types being used
+  for (i=0;i<CTYN;i++) printf("%s(%d)=%g ",CNAME[i],cty[i],NUMC(cty[i]));
+  printf("\n%d cell types being used in col %d\n",CTYN,colid);
+  }
+  ENDVERBATIM  
+}
+
 : intf.jitcondiv() assigns pointers for hoc symbol storage
 PROCEDURE jitcondiv () {
   VERBATIM {
@@ -2236,11 +2594,11 @@ PROCEDURE jitcondiv () {
     inumcols = 1;
   } else inumcols++;
 
-  if(colid >= ippgbufsz) { // need more memory? then realloc
+  if(inumcols >= ippgbufsz) { // need more memory? then realloc
     ippgbufsz *= 2;
     ppg = realloc((void*)ppg,(size_t)ippgbufsz*sizeof(postgrp*));
   }
-  ppg[colid] = pg;
+  ppg[inumcols-1] = pg;
   pg->col = colid;
   pg->ce =  *hoc_objgetarg(1);
 
@@ -2302,7 +2660,7 @@ PROCEDURE jitrec () {
   if(verbose>1) printf("jitrec from col %d, ip=%p, pg=%p\n",ip->col,ip,pg);
   if (! ifarg(2)) { // clear with jitrec() or jitrec(0)
     pg->jrmax=0; pg->jridv=0x0; pg->jrtvv=0x0;
-    return;
+    return 0;
   }
   i =   vector_arg_px(1, &pg->jrid); // could just set up the pointers once
   pg->jrmax=vector_arg_px(2, &pg->jrtv);
@@ -2314,6 +2672,14 @@ PROCEDURE jitrec () {
   }
   ENDVERBATIM
 }
+
+: PROCEDURE jitrecreset () {
+:   VERBATIM
+:   ip=IDP; pg=ip->pg;
+:   if(verbose>1) printf("jitrecreset from col %d, ip=%p, pg=%p\n",ip->col,ip,pg);
+:   pg->jrj=0; // needs to be set at beginning of run
+:   ENDVERBATIM
+: }
 
 : intf.scsv()
 FUNCTION scsv () {
@@ -2395,7 +2761,9 @@ PROCEDURE randspk () {
   ip=IDP; pg=ip->pg;
   if (ip->rvi > ip->rve) { // pointers go from rvi to rve inclusive
     ip->input=0;           // turn off
-    nxt=-1.;
+    //nxt=-1.; // MR: Commented this out because it kills off the net_send / NET_RECEIVE feedback
+                // loop once the input spike vecs have finished. If we then push more spikes to the net
+                // at a later time, they'll never get picked up if nxt=-1 as the loop is dead.
   } else if (t==0) {     // initialization
     nxt=pg->vsp[ip->rvi];
     EXSY=pg->sysp[ip->rvi]; // synapse target for external input
@@ -2413,7 +2781,7 @@ PROCEDURE randspk () {
 
 :** vers gives version
 PROCEDURE vers () {
-  printf("$Id: intf6.mod,v 1.86 2011/10/21 00:35:24 samn Exp $\n")
+  printf("$Id: intf6.mod,v 1.100 2012/04/05 22:38:25 samn Exp $\n")
 }
 
 :** val(t,tstart) fills global vii[] to pass values back to record() (called from record())
@@ -2451,8 +2819,8 @@ PROCEDURE record () {
   VERBATIM {
   int i,j,k,nz; double ti;
   vp = SOP;
-  if(!vp) {printf("**** record ERRA: vp=NULL!\n"); return;}
-  if (tg>=t) return;
+  if(!vp) {printf("**** record ERRA: vp=NULL!\n"); return 0;}
+  if (tg>=t) return 0;
   if (ip->record==1) {
     while ((int)vp->p >= (int)vp->size-(int)((t-tg)/vdt)-10) { 
       vp->size*=2;
@@ -2490,7 +2858,7 @@ PROCEDURE recspk (x) {
   VERBATIM { 
   vp = SOP;
   record();
-  if (vp->p > vp->size || vp->vvo[6]==0) return; 
+  if (vp->p > vp->size || vp->vvo[6]==0) return 0; 
   if (vp->p > 0) {
     if (vp->vvo[0]!=0x0) vp->vvo[0][vp->p-1]=_lx;
     vp->vvo[6][vp->p-1]=spkht; // the spike
@@ -2536,11 +2904,11 @@ PROCEDURE recfree () {
 : (CHANGED from intervals and global proc in v224)
 : intf.initvspks(indices, times , weights, synapse types)
 PROCEDURE initvspks () {
-  VERBATIM 
+  VERBATIM
   {int max, i,err;
     double last,lstt;
     ip=IDP; pg=ip->pg;
-    if (! ifarg(1)) {printf("Return initvspks(ivspks,vspks,wvspks)\n"); return 0.;}
+    if (! ifarg(1)) {printf("Return initvspks(indices,times,weights,syntypes)\n"); return 0.;}
     if(verbose>1) printf("initvspks: col=%d, ip=%p, pg=%p, pg->isp=%p\n",ip->col,ip,pg,pg->isp);
     if (pg->isp!=NULL) clrvspks();
     ip=IDP; pg=ip->pg; err=0;
@@ -2558,7 +2926,7 @@ PROCEDURE initvspks () {
       if (pg->isp[i]!=last) { // new one
         lop(pg->ce,(unsigned int)pg->isp[i]);
         qp->rvb=qp->rvi=i;
-        qp->vinflg=1;
+        qp->vinflg=qp->input=1;
         last=pg->isp[i];
         lstt=pg->vsp[i];
         i++;
@@ -2579,13 +2947,14 @@ PROCEDURE initvspks () {
   ENDVERBATIM
 }
 
-:** shock() reads random spike times from save db as initvspks() but just sends a single shock
+:** shock() reads random spike times from same db as initvspks() but just sends a single shock
 : to each listed cell
 : this is a global procedure that calls multiple cells
 PROCEDURE shock () {
   VERBATIM 
   {int max, i,err;
     double last, lstt, *isp, *vsp, *wsp;
+    printf("WARNING: This routine appears to be defunct -- please check code in intf6.mod\n");
     if (! ifarg(1)) {printf("Return shock(ivspks,vspks,wvspks)\n"); return 0.;}
     ip=IDP; pg=ip->pg; err=0;
     i = vector_arg_px(1, &isp); // could just set up the pointers once
@@ -3033,7 +3402,7 @@ PROCEDURE wrecord (te) {
           wwo[wrp][k+j] += scale*_t_Psk[j+max]; // direct copy from the Psk table
         }
       }
-    } else if (twg>=t) { return;
+    } else if (twg>=t) { return 0;
     } else {
       for (ti=twg,k=(int)floor((twg-rebeg)/vdt+0.5);ti<=t && k<wwsz;ti+=vdt,k++) { 
         valps(ti,twg);  // valps() for pop spike calculation
@@ -3211,11 +3580,11 @@ FUNCTION flag () {
   ip=IDP; pg=ip->pg;
   if (FLAG==OK) { // callback -- DO NOT SET FROM HOC
     FLAG=0.;
-    if (stoprun) {slowset=0; return;}
+    if (stoprun) {slowset=0; return 0.0;}
     if (IDP->dbx==-1)printf("slowset fi:%d ix:%d ss:%g delt:%g t:%g\n",fi,ix,slowset,delt,t);
     if (t>slowset || ix>=pg->cesz) {  // done
       printf("Slow-setting of flag %d finished at %g: (%d,%g,%g)\n",fi,t,ix,delt,slowset); 
-      slowset=0.; return;
+      slowset=0.; return 0.0;
     }
     if (ix<pg->cesz) {
       lop(pg->ce,ix);
@@ -3227,12 +3596,12 @@ FUNCTION flag () {
       net_send((void**)0x0, wts,tpnt,delt,OK);
       #endif
     }
-    return;
+    return 0.0;
   }  
   if (slowset>0 && ifarg(3)) {
     printf("INTF6 flag() slowset ERR; attempted set during slowset: fi:%d ix:%d ss:%g delt:%g t:%g",\
            fi,ix,slowset,delt,t); 
-    return;
+    return 0.0;
   }
   ip = IDP; setfl=ifarg(3); 
   if (ifarg(4)) { slowset=*getarg(4); delt=slowset/pg->cesz; slowset+=t; } 
@@ -3320,7 +3689,6 @@ FUNCTION floc () {
     vod=vector_arg(i++); dd=vector_newsize(vod,n); // distance vector
     r= *getarg(i++); 
   }
-  // WARNING need to fix this! Won't accept a list of cell types!
   if (ifarg(i)) if (hoc_is_double_arg(i)) ty= *getarg(7); else { // type or -1 for EXCIT or -2 for INHIB
     tvf=1; voty=vector_arg(i++); tdy=vector_newsize(voty,n); // type vector
   } 
@@ -3348,42 +3716,6 @@ FUNCTION floc () {
     _lfloc=(double)ii;  } // return the index of the closest cell found
   ENDVERBATIM
 }
-
-
-
-:** findcellsinbox(xmin,xmax,ymin,ymax,cellids,type) // CK: find cells matching x,y conditionals 
-FUNCTION findcellsinbox () {
-  VERBATIM
-  double xmin,xmax,ymin,ymax,min,rad, *ix, *tdy; 
-  int i,n,cnt,ty,tvf; 
-  void *voi, *vod, *voty;
-  cnt=0; n=1000; ty=1e9; tvf=0;
-  ip = IDP; pg=ip->pg;
-  xmin = *getarg(1);
-  xmax = *getarg(2);
-  ymin = *getarg(3);
-  ymax = *getarg(4);
-  voi=vector_arg(5); ix=vector_newsize(voi,n); // id vector
-  ty= *getarg(6);
-  for (i=0,min=1e9;i<pg->cesz;i++) { qp=lopr(pg->ce,i); 
-    if (ty!=1e9 && ((ty>=0 && ty!=qp->type) || (ty==-1 && qp->inhib==1) || (ty==-2 && qp->inhib==0))) continue;
-    if (xloc>=xmin && xloc<=xmax && yloc>=ymin && yloc<=ymax) {
-      if (cnt>=n) { // resize the vectors
-        ix=vector_newsize(voi,n*=2); 
-        if (tvf) tdy=vector_newsize(voty,n);
-      }
-      ix[cnt]=(double)i;
-      if (tvf) tdy[cnt]=(double)qp->type;
-      cnt++;
-    }
-  }
-  ix=vector_newsize(voi,cnt);
-  if (tvf) tdy=vector_newsize(voty,cnt);
-  _lfindcellsinbox=(double)cnt;
-  ENDVERBATIM
-}
-
-
 
 :** invlset([val]) set or get the invl flag
 FUNCTION invlset () {
@@ -3428,3 +3760,247 @@ FUNCTION rates (vv) {
   rates = maxnmc / (1 + exp(0.062 (/mV) * -vv) * ( (mg / mg0) ) )
 }
 
+: apply dopamine reward/punishment using pdope pointers, which store eligiblity signals as times
+: of occurrence -- intf.dopelearn(1=='DA-burst' -1=='DA-dip') -- applies dopamine learning to all cells
+: in same ce as calling INTF6. 
+: rules:
+:  DA-burst with pre-before-post causes LTP.
+:  DA-burst with post-before-pre causes LTD.
+:  DA-dip   with pre-before-post causes LTD.
+:  DA-dip   with post-before-pre causes LTP.
+FUNCTION dopelearn () {
+  VERBATIM
+  Point_process *pnnt;
+  int i , iCell, pot;
+  double tmp,maxw,inc,d,tau,pdopet;
+  if(seadsetting!=3.) return 0.0; // seadsetting==3 for DOPE, must be set before network setup
+  pot = (int) *getarg(1); // 
+  ip=IDP; pg=ip->pg;
+  for(iCell=0;iCell<pg->cesz;iCell++){
+    lop(pg->ce,iCell);
+    if(!qp->dvt)continue; //don't write empty pointers if no divergence
+    for(i=0;i<qp->dvt;i++){
+      pdopet = fabs(qp->pdope[i]); // fabs for backwards elig trace (post before pre has neg sign)
+      d = t - pdopet; // time since eligibility trace turned on
+      if(qp->pdope[i] > -1e9 && d <= maxeligtrdur ) { // -1e9 means it wasn't activated. maxeligtrdur is max time
+        tmp = qp->wgain[i]; // current weight gain of synapse
+        maxw = qp->pplastmaxw[i]; // max possible weight for the synapse
+        tau = qp->pplasttau[i]; // time constant
+        if( ! ( inc = qp->pplastinc[i] ) ) continue; // if plasticity is off at this synapse
+        if(pot>0) { // DA-burst
+          if(qp->pdope[i] >= 0) { // DA-burst with pre-before-post -> LTP
+            if(SOFTSTDP) inc *= (1.0 - tmp / maxw); // soft bound for potentiation
+            if (EXPELIGTR) // if we want to use exponential decay
+              qp->wgain[i] += EPOTW * inc * exp( -d / tau ); // increment the wgain of the synapse
+            else
+              qp->wgain[i] += EPOTW * inc;
+          } else { // DA-burst with post-before-pre -> LTD
+            if(SOFTSTDP) inc *= (tmp / maxw); // soft bound for depression
+            if (EXPELIGTR) // if we want to use exponential decay
+              qp->wgain[i] -= EDEPW * inc * exp( -d / tau ); // increment the wgain of the synapse
+            else
+              qp->wgain[i] -= EDEPW * inc;
+          }
+        } else { // DA-dip
+            if(qp->pdope[i] >= 0) { // DA-dip with pre-before-post -> LTD
+              if(SOFTSTDP) inc *= (tmp / maxw); // soft bound for depression
+              if (EXPELIGTR) // if we want to use exponential decay
+                qp->wgain[i] -= EDEPW * inc * exp( -d / tau ); // increment the wgain of the synapse
+              else
+                qp->wgain[i] -= EDEPW * inc;
+            } else { // DA-dip with post-before-pre -> LTP
+              if(SOFTSTDP) inc *= (1.0 - tmp / maxw); // soft bound for potentiation
+              if (EXPELIGTR) // if we want to use exponential decay
+                qp->wgain[i] += EPOTW * inc * exp( -d / tau ); // increment the wgain of the synapse
+              else
+                qp->wgain[i] += EPOTW * inc;
+            }
+        }
+        // check bounds of wgain
+        if(qp->wgain[i]<0.) qp->wgain[i]=0.; else if(!SOFTSTDP && qp->wgain[i]>maxw) qp->wgain[i]=maxw;
+        if(reseteligtr) qp->pdope[i] = -1e9; // reset here once synapse rewarded/punished
+      }
+    }
+  }
+  return 1.0;
+  ENDVERBATIM
+}
+
+: intf.setdeletion - see comments below - used by homeostatic synaptic scaling
+PROCEDURE setdeletion () {
+  VERBATIM
+  // Allow neurons to spontaneously die in proportion to their scaling factor (modified by
+  // a rate constant which can be supplied as an argument).
+  // This allows investigation into the progression of Alzheimer's disease as a via synaptic
+  // scaling (Small, 2008).
+  //
+  // ARGUMENT: dynamic deletion rate constant (<=0 turns off dynamic deletion, >0 turns it on and
+  // sets the rate constant).
+  double x = *getarg(1);
+  if (x <= 0) {
+    dynamicdel = 0; // Turn off dynamic deletion
+  } else {
+    dynamicdel = 1; // Turn on dynamic deletion
+    delspeed = x; // Set deletion rate constant
+    printf("Set dynamic deletion rate constant = %e\n", delspeed);
+  }
+  ENDVERBATIM
+}
+
+VERBATIM
+void dynamicdelete (double time) {
+  // Allow this cell to die, with probability proportional to excitation and rate constant
+  // Integrate over time since last call.
+  
+  // mcell_ran4 appears to take following args:
+  // seed, pointer to RNG output store, num. random values to generate, range of random var (?)
+  mcell_ran4(&sead, dscr, 1, 1.0); // Generate random value
+  double p = dscr[0]; // Get the random value generated by the mcell_ran4 call
+
+  double difference = ip->activity / ip->goal_activity; // Find magnitude of difference between activity and goal activity
+
+  // Check if p < (difference-2)^2 * delspeed, normalised by time since last check, t - t'.
+  //
+  // This means that when difference = 2, chance of deletion is zero
+  // (i.e. all cells are allowed to at least double their baseline firing rates without
+  // risking excitotoxicity).
+  // When difference = 3, chance of deletion per second is delspeed.
+  // When difference = 4, chance of deletion per second is exponentially higher, etc.
+  double x = difference - 2.0;
+  if (x < 0) {
+    x = 0; // Prevent scalefactors which are <1 from having a positive x^2
+  }
+  double threshold =  x * x * delspeed * ((time - ip->lastupdate) / 1000.0);
+
+  if (p < threshold) {
+    printf("p = %e, threshold = %e from x^2 * delspeed * timegap:\nx = %e, x^2 = %e, delspeed = %e, x^2*delspeed = %e, timegap (s) = %e\n", p, threshold, x, x*x, delspeed, x*x*delspeed, (time-ip->lastupdate)/1000.0);
+
+    ip->dead = 1; // Kill cell
+    printf("Cell %d has just died (scalefactor = %f)\n\n", ip->id, ip->scalefactor);
+  }
+}
+ENDVERBATIM
+
+VERBATIM
+double get_avg_activity () {
+  //Start by implementing retrospectively (i.e. assume network has been trained according to
+  //pre-defined activity levels, but manually set targets retrospectively to these values by observation)
+  // - with more time, implement Turrigiano (2008)'s "Factor+ vs Factor-" which balances firing rates
+  
+  // We could simply set goal_activity to be the current average activity value using
+  //return ip->activity;
+  // at an arbitrary time (e.g. when we turn on scaling). But as 'current' activity fluctuates, we don't
+  // want to be stuck maintaining an unrealistic average firing rate, in the case that the 'current'
+  // activity value was unusually high at the time of setting the goal.
+  // It would be better to record an average of the neuron's activity so far, and use that as the goal.
+  return ip->spkcnt / t;
+}
+ENDVERBATIM
+
+VERBATIM 
+void raise_activity_sensor (double time) {
+  // Update the cell's activity sensor value, assuming this function has been called at the same
+  // time as a spike at time t
+  // REQUIRES: time of current spike in ms
+  // ENSURES: returns activity value in MHz (due to ms timing)
+  
+  // Raise the activity by (-a + 1) / tau
+  ip->activity = ip->activity + (-ip->activity + 1.0) / activitytau;
+
+  // Update lastupdate time for next decay operation
+  // -- probably shouldn't set this here, as it's also set in the NET_RECEIVE block on every
+  // incoming event, and multiple updates of ip->lastupdate in different places will just lead
+  // to confusion
+  //ip->lastupdate = time;
+  
+  // DEBUG: (pick a random cell ID)
+  //if (ip->id == 9 || ip->id == 10) {
+  //  printf("spike from cell %d (inhib = %d) at time %f --> activity sensor = %f, target activity = %f, average activity = %f, scale = %f\n", ip->id, ip->inhib, time, ip->activity, ip->goal_activity, get_avg_activity(), ip->scalefactor);
+  //}
+}
+ENDVERBATIM
+
+VERBATIM
+void decay_activity_sensor (double time) {
+  // Decay the cell's activity sensor value according to the time since last decay update
+  // In van Rossum et al. (2000), this is called every discrete timestep t
+  // But this procedure is only called on NET_RECEIVE events, so we need to decay
+  // taking into account the time since the last decay operation.
+
+  // a_t = a_t0 * e(-(1/tau * t-t0))
+  ip->activity = ip->activity * exp(-activityoneovertau * (time - ip->lastupdate));
+}
+ENDVERBATIM
+
+VERBATIM
+void update_scale_factor (double time) {
+  // Implements weight scaling according to van Rossum et al. (2000)
+
+  // Get difference between goal and current activity
+  double err = ip->goal_activity - ip->activity;
+
+  // Bound error to max_err value in the case that the activity sensor saturates during epileptic activity
+  // This should prevent the integral from becoming excessively large over a relatively short time,
+  // and therefore affecting the scaling for a very long time into the future.
+  //if (err > ip->max_err) {
+    //err = ip->max_err;
+  //}
+  //if (err < -ip->max_err) {
+    //err = -ip->max_err;
+  //}
+
+  // Set scalefactor
+  ip->scalefactor += (activitybeta * ip->scalefactor * err + activitygamma * ip->scalefactor * ip->activity_integral_err);
+
+  // Bound scalefactor to max_scale to prevent Inf values
+  if (ip->scalefactor > ip->max_scale) {
+    ip->scalefactor = ip->max_scale;
+  }
+
+  // Calculate integral error term between sensor and target activity for next time (t')
+  double timecorrection = time - ip->lastupdate;
+  // e.g. If last update was 1ms ago, then the time correction = 1
+  // If last update was 0.1ms ago correction = 0.1, so the accumulated error will be much smaller
+  // If it's been a long time since the last update, the error will be correspondingly much larger
+
+  ip->activity_integral_err += (err * timecorrection);
+  // DEBUG: (pick a random cell ID)
+  //if (ip->id == 9 || ip->id == 10) {
+  //  printf("cell %d err = %f, time-corrected err = %f, integral_err = %f\n", ip->id, err, (err * timecorrection), ip->activity_integral_err);
+  //}
+}
+ENDVERBATIM
+
+: intf.scalefactor - optional arg sets value
+:  used by homeostatic synaptic scaling
+FUNCTION scalefactor () {
+  VERBATIM
+  if (ifarg(1)) IDP->scalefactor = *getarg(1);
+  return IDP->scalefactor; // Return this cell's scale factor
+  ENDVERBATIM
+}
+
+: intf.activity - optional arg sets value
+:  used by homeostatic synaptic scaling
+FUNCTION activity () {
+  VERBATIM
+  if (ifarg(1)) IDP->activity = *getarg(1);
+  return IDP->activity; // Return this cell's activity sensor value
+  ENDVERBATIM
+}
+
+: intf.goalactivity - optional arg sets value 
+:  used by homeostatic synaptic scaling - target firing rate
+FUNCTION goalactivity () {
+  VERBATIM
+  if (ifarg(1)) IDP->goal_activity = *getarg(1);
+  return IDP->goal_activity;   // Return this cell's target activity value
+  ENDVERBATIM
+}
+
+: intf.isdead - is the cell dead?
+FUNCTION isdead() {
+  VERBATIM
+  return IDP->dead; // Return this cell's 'dead' flag
+  ENDVERBATIM
+}
