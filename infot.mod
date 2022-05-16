@@ -29,7 +29,9 @@ VERBATIM
 #include <stdlib.h>
 #include <math.h>
 static const double* ITsortdata = NULL; /* used in the quicksort algorithm */
-static double tetrospks2(), pdfpr(), tetrospks3();
+static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,int shuf);
+static void pdfpr (double* pdf,int szp,int dim, char* name);
+static double tetrospks3 (double* X1d,double* X2d,double* X3d,double* XO,int szX1,int szXO,int shuf);
 static int dbxi[10];
 
 typedef struct ITNode_ {
@@ -42,9 +44,9 @@ typedef struct ITNode_ {
 
 ITNode* allocITNode(int idims) {
   ITNode* p;
-  p = calloc(1,sizeof(ITNode));
+  p = (ITNode*)calloc(1,sizeof(ITNode));
   if(!p) { printf("allocITNode: out of mem!\n"); hxe(); return 0x0; }
-  p->pvals = calloc(idims,sizeof(int));
+  p->pvals = (int*)calloc(idims,sizeof(int));
   return p;
 }
 
@@ -395,6 +397,8 @@ static double lz76c (void* vv) {
   return lz76complexityd(x,n);
 }
 
+extern void ishuffle(int* x,int nx);
+
 //* tentropd() transfer entropy of y -> x
 //x=time-series 1, y=time-series 2,iLen=# of samples,nbins=# of values to discretize time-series to,
 //xpast=# of past x values to use for prediction,ypast=# of past y values to use for prediction
@@ -508,7 +512,7 @@ double tentropd (double* x,double* y,int iLen,int nbins,int xpast,int ypast,int 
       }
       if(verbose>1) {printf("cntjxy=%d\n",cntjxy);
         for(i=0;i<cntjxy;i++) {
-          printf("pjointxy%d: [");
+          printf("pjointxy: [");
           for(j=0;j<jointd;j++) printf("%d ",pjointxy[i][j]);
           printf("] , cnt=%d, p=%g\n",pjointxy[i][jointd],pjointxy[i][jointd]/(double)N);
         }
@@ -723,7 +727,7 @@ static double tentropspks (void* vv) {
   szXO=ifarg(2)?vector_arg_px(2,&XO):0;
   shuf=ifarg(3)?((int)*getarg(3)):0;
   szX3=ifarg(4)?vector_arg_px(4,&X3):0;
-  if(szX3) tetrospks3(X1,X2,X3,XO,szX1,szXO,shuf);
+  if(szX3) return tetrospks3(X1,X2,X3,XO,szX1,szXO,shuf);
   else return tetrospks2(X1,X2,XO,szX1,szXO,shuf);
 }
 
@@ -757,6 +761,8 @@ NTEL2DOFREE:
   FreeListVec(&pLFrom); FreeListVec(&pLTo);
   return ret;
 }
+
+extern int list_vector_px3 (Object *ob, int i, double** px, void** vv);
 
 //*** Vind0.nte(Vind1,LIST,OUTVEC or OUTLIST) // do normalization with H(X2F|X2P)
 static double nte (void* vv) {
@@ -870,7 +876,7 @@ static double entropxfgxp (void* vv) {
   int sz,minv,maxv,cnt,i,j,szp,*X;
   sz = vector_instance_px(vv,&x);
   cnt=0;
-  X=scrset(sz);
+  X=iscrset(sz);
   minv=1e9; maxv=-1e9;
   for (i=0;i<sz;i++) { 
     X[i]=(int)x[i]; 
@@ -1165,7 +1171,7 @@ static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,i
 }
 
 // for debugging -- print out a pdf
-static double pdfpr (double* pdf,int szp,int dim, char* name) {
+static void pdfpr (double* pdf,int szp,int dim, char* name) {
   double x,ds; int i,j,k,l,m,cnt,*nonzero;
   ds=0.; 
   printf("Contents of PDF %s\n",name);
@@ -1306,9 +1312,9 @@ static double* ITgetrank (int n, double mdata[])
 { int i;
   double* rank;
   int* index;
-  rank = calloc(n,sizeof(double));
+  rank = (double*)calloc(n,sizeof(double));
   if (!rank) return NULL;
-  index = calloc(n,sizeof(int));
+  index = (int*)calloc(n,sizeof(int));
   if (!index)
   { free(rank);
     return NULL;
@@ -1400,7 +1406,7 @@ double entropspksd (double* x,int sz) {
   ret=-1.0; err=0;
   px=NULL; 
   minv=1000000000; maxv=-1000000000;
-  X=scrset(sz*2); // move into integer arrays
+  X=iscrset(sz*2); // move into integer arrays
   cnt=0;
   for (i=0;i<sz;i++) { 
     X[i]=(int)x[i]; 

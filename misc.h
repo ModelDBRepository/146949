@@ -107,7 +107,7 @@ extern char* hoc_object_name(Object*);
 extern int cmpdfn();
 extern int openvec(int, double **);
 int list_vector_px();
-double *list_vector_resize();
+double *list_vector_resize (Object *ob, int i, int sz);
 static void hxe() { hoc_execerror("",0); }
 extern void FreeListVec(ListVec** pp);
 extern ListVec* AllocListVec(Object* p);
