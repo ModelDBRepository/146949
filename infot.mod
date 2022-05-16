@@ -34,6 +34,10 @@ static void pdfpr (double* pdf,int szp,int dim, char* name);
 static double tetrospks3 (double* X1d,double* X2d,double* X3d,double* XO,int szX1,int szXO,int shuf);
 static int dbxi[10];
 
+static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,int shuf);
+static void pdfpr (double* pdf,int szp,int dim, char* name);
+static double tetrospks3 (double* X1d,double* X2d,double* X3d,double* XO,int szX1,int szXO,int shuf);
+
 typedef struct ITNode_ {
   int idims;
   int icount;
@@ -397,8 +401,6 @@ static double lz76c (void* vv) {
   return lz76complexityd(x,n);
 }
 
-extern void ishuffle(int* x,int nx);
-
 //* tentropd() transfer entropy of y -> x
 //x=time-series 1, y=time-series 2,iLen=# of samples,nbins=# of values to discretize time-series to,
 //xpast=# of past x values to use for prediction,ypast=# of past y values to use for prediction
@@ -721,7 +723,7 @@ static double ntedir (void* vv) {
 // of X1spikecounts,X2spikecounts onto X3spikecounts
 static double tentropspks (void* vv) {
   double *X1,*X2,*XO,*X3; int szX1,szX2,szXO,shuf,szX3;
-  szX1 = vector_instance_px(vv,&X1);
+  szX1 = vector_instance_px((IvocVect*)vv,&X1);
   if((szX2=vector_arg_px(1,&X2))!=szX1) {
     printf("tentropspks ERRA: X1,X2 must have same size (%d,%d)\n",szX1,szX2); return -1.0; }
   szXO=ifarg(2)?vector_arg_px(2,&XO):0;
@@ -762,13 +764,11 @@ NTEL2DOFREE:
   return ret;
 }
 
-extern int list_vector_px3 (Object *ob, int i, double** px, void** vv);
-
 //*** Vind0.nte(Vind1,LIST,OUTVEC or OUTLIST) // do normalization with H(X2F|X2P)
 static double nte (void* vv) {
   int i, j, k, ii, jj, oi, nx, ny, omax, sz, ci, bg, flag, nshuf, szX, *x1i, *x2i, x1z, x2z;
-  ListVec *pLi; Object *obi,*ob;  double *x, *y, *out, o1, o2, cnt, *vvo[3]; void *vvl;
-  nx = vector_instance_px(vv, &x); // index i vector
+  ListVec *pLi; Object *obi,*ob;  double *x, *y, *out, o1, o2, cnt, *vvo[3]; IvocVect *vvl;
+  nx = vector_instance_px((IvocVect*)vv, &x); // index i vector
   ny = vector_arg_px(1, &y);       // index j vectors
   pLi = AllocListVec(obi=*hoc_objgetarg(2)); // input vectors
   ob =   *hoc_objgetarg(3);
@@ -873,10 +873,10 @@ double entropxfgxpd (double* pXP, double* pXFXP,int minv,int maxv,int szp) {
 // Vector has elements of X
 static double entropxfgxp (void* vv) {
   double *x,*pXP,*pXFXP,dret;
-  int sz,minv,maxv,cnt,i,j,szp,*X;
-  sz = vector_instance_px(vv,&x);
+  int sz,minv,maxv,cnt,i,j,szp;
+  sz = vector_instance_px((IvocVect*)vv,&x);
   cnt=0;
-  X=iscrset(sz);
+  unsigned int* X=scrset(sz);
   minv=1e9; maxv=-1e9;
   for (i=0;i<sz;i++) { 
     X[i]=(int)x[i]; 
@@ -1400,13 +1400,13 @@ static double mutinfb (void* v) {
 
 double entropspksd (double* x,int sz) {
   double *px,ret,dinf,size;
-  int i,*X,maxv,minv,cnt,err;
+  int i,maxv,minv,cnt,err;
   if(sz<1) {printf("entropspks ERR0: min size must be > 0!\n"); return -1.0;}
   size=(double)sz;
   ret=-1.0; err=0;
   px=NULL; 
   minv=1000000000; maxv=-1000000000;
-  X=iscrset(sz*2); // move into integer arrays
+  unsigned int* X=scrset(sz*2); // move into integer arrays
   cnt=0;
   for (i=0;i<sz;i++) { 
     X[i]=(int)x[i]; 
