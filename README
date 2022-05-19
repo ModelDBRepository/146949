@@ -52,5 +52,6 @@ Examples:
 20160921 Updates from the Lytton lab to allow the model to run on mac
 OS X.
 
-20220517 Edited intf.mod and misc.h to support NEURON versions <8.1.0,
-8.2.0 and 9.0.0.
+20220517 Edited infot.mod, intf6.mod, intfsw.mod, matrix.mod, misc.h,
+misc.mod staley.mod, stats.mod, vecst.mod to support NEURON versions
+<8.1.0, 8.2.0 and 9.0.0.
