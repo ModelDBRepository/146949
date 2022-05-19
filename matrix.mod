@@ -66,7 +66,7 @@ static double symmclean(void* vv) {
   }
   for (i=0,j=0;i<nx;i++) if (x[i]!=-1) d[j++]=x[i]; // keep these
   for (i=0;i<j;i++) x[i]=d[i]; // copy back
-  vector_resize(vv,j);
+  vector_resize((IvocVect*)vv,j);
   return (double)j;
 }
 ENDVERBATIM
@@ -399,7 +399,7 @@ static double ppmrd (void* vv) {
   FILE* f;
 
   num = vector_instance_px(vv, &x);
-  maxsz=vector_buffer_size(vv);
+  maxsz=vector_buffer_size((IvocVect*)vv);
   f =     hoc_obj_file_arg(1);
   fgets(tstr,256,f);
   sscanf(tstr,"P%d",&type);
@@ -410,7 +410,7 @@ static double ppmrd (void* vv) {
   fgets(tstr,256,f); // usually 255 for max
   sscanf(tstr,"%d",&max);
   if (maxsz<rows*cols) { printf("ppmrd vec too small %d %d.",maxsz,rows*cols); hxe(); }
-  vector_resize(vv, rows*cols);
+  vector_resize((IvocVect*)vv, rows*cols);
   switch (type) {
     case 3:
     ii=0;
@@ -491,6 +491,7 @@ static double rgb (void* vv) {
     g[i]=floor((x[i]-r[i]*65536.)/256.); 
     b[i]=x[i]-r[i]*65536.-g[i]*256.; 
   }
+  return 0.0;
 }
 ENDVERBATIM
 
@@ -521,7 +522,7 @@ static double mrow (void* vv) {
   COLS=cols=(ifarg(3))?(int)*getarg(3):(int)COLS;
   ROWS=rows=ny/cols;
   if (i>=rows) { hoc_execerror("Indices out of bounds", 0); }
-  if (cols!=nx) x=vector_newsize(vv, nx=cols);
+  if (cols!=nx) x=vector_newsize((IvocVect*)vv, nx=cols);
   for (j=0;j<nx;j++) { x[j] = y[i*cols+j]; }
   return nx;
 }
@@ -538,7 +539,7 @@ static double mcol(void* vv) {
   COLS=cols=(ifarg(3))?(int)*getarg(3):(int)COLS;
   if (j>=cols) { hoc_execerror("Indices out of bounds", 0); }
   ROWS=rows=ny/cols;
-  if (rows!=nx) x=vector_newsize(vv, nx=rows);
+  if (rows!=nx) x=vector_newsize((IvocVect*)vv, nx=rows);
   for (i=0;i<nx;i++) { x[i] = y[i*cols+j]; }
   return nx;
 }
@@ -618,11 +619,11 @@ typedef struct COMPL { // component list
   int sz;
   int bufsz;
   runl* pruns;
-} compl;
+} compl_struct;
 
-compl* alloccompl (int bufsz, runl* pruns) {
-  compl* r;
-  r = calloc(1,sizeof(compl));
+compl_struct* alloccompl (int bufsz, runl* pruns) {
+  compl_struct* r;
+  r = (compl_struct*)calloc(1,sizeof(compl_struct));
   r->sz=0;
   r->bufsz = bufsz;
   r->p = (compt*) calloc(bufsz,sizeof(compt));
@@ -630,7 +631,7 @@ compl* alloccompl (int bufsz, runl* pruns) {
   return r;
 }
 
-void addcomp (compl* pc, int maxruns) {
+void addcomp (compl_struct* pc, int maxruns) {
   if(pc->sz + 1 >= pc->bufsz) {
     pc->bufsz *= 10;
     pc->p = (compt*) realloc(pc->p,pc->bufsz*sizeof(compt));
@@ -640,15 +641,15 @@ void addcomp (compl* pc, int maxruns) {
   pc->sz++;
 }
 
-void freecompl (compl** cc) {
-  compl* c; int i;
+void freecompl (compl_struct** cc) {
+  compl_struct* c; int i;
   c=cc[0];
   for(i=0;i<c->sz;i++) free(c->p[i].prun);
   free(c->p);
   cc[0]=0x0;
 }
 
-void addruntocomp (compl* pc, int cidx, int ridx ) {
+void addruntocomp (compl_struct* pc, int cidx, int ridx ) {
   compt* c;
   c = &pc->p[cidx];
   c->prun[c->nruns] = ridx;
@@ -664,7 +665,7 @@ void addruntocomp (compl* pc, int cidx, int ridx ) {
 
 runl* allocrunl (int bufsz) {
   runl* r;
-  r = calloc(1,sizeof(runl));
+  r = (runl*)calloc(1,sizeof(runl));
   r->sz=0;
   r->bufsz = bufsz;
   r->p = (runt*) calloc(bufsz,sizeof(runt));
@@ -721,7 +722,7 @@ int vintrunts (runt* r1, runt* r2) { // return 1 if they overlap horizontally an
   return !(r1->left>r2->right || r2->left>r1->right) && abs(r1->y-r2->y)==1;
 }
 
-void floodruns (compl* pc, int ridx, int cidx) {
+void floodruns (compl_struct* pc, int ridx, int cidx) {
   int i;
   runl* pr;
   pr = pc->pruns;
@@ -738,8 +739,8 @@ void floodruns (compl* pc, int ridx, int cidx) {
   }
 }
 
-compl* findcomps (runl* pruns) {
-  compl* pc; int i,j,cidx; runt *r1,*r2;
+compl_struct* findcomps (runl* pruns) {
+  compl_struct* pc; int i,j,cidx; runt *r1,*r2;
   pc = alloccompl(1000, pruns);
   for(i=0;i<pruns->sz;i++) {
     if(pruns->marked[i]) continue;
@@ -753,7 +754,7 @@ compl* findcomps (runl* pruns) {
 static double ccomps (void* vv) {
   int x,y,rows,cols,szin,szout;
   double *pin,*plab,val;
-  runl* pr; compl* pc;
+  runl* pr; compl_struct* pc;
   szin=vector_instance_px(vv,&pin);
   szout=vector_arg_px(1, &plab);
   COLS=cols=(int)*getarg(3);
