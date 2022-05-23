@@ -417,6 +417,7 @@ double tentropd (double* x,double* y,int iLen,int nbins,int xpast,int ypast,int 
   dsum=0.0;
   *sig=-1e6;//init sig to neg
   *nTE = 0.0;
+  /* 2nd cntpx should probably be cntpxy */
   sh=cntjxy=cntjx=cntpx=cntpx=0;   teavg=testd=te=teout=0.0;
 
   px = nbins>0 ? getnormd(x,iLen,nbins) : doublep2intp(x,iLen); //discretize x to nbins, or just copy to ints
@@ -865,7 +866,7 @@ double entropxfgxpd (double* pXP, double* pXFXP,int minv,int maxv,int szp) {
       if (usetable && tmp[3]>=MINLOG2 && tmp[3]<=MAXLOG2) {
         tmp[0] -=tmp[2]*_n_LOG2(tmp[3]);
       } else {  tmp[0] -=tmp[2]*  log2d(tmp[3]); if (usetable&&verbose>0.4) { 
-          printf("WARNA:%g outside of [%g,%g] TABLE\n",tmp[4],MINLOG2,MAXLOG2); }}}}
+          printf("WARNA:%g outside of [%g,%g] TABLE\n", tmp[3], MINLOG2, MAXLOG2); }}}}
   return tmp[0];        
 }
 
@@ -1105,6 +1106,7 @@ static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,i
     cnt1/=sz; cnt2/=sz; // ignore if not enough of the windows are filled
     if (cnt1<binmin) return -11.; else if (cnt2<binmin) return -12.;
     if (binmax) if (cnt1>binmax) return -11.; else if (cnt2>binmax) return -12.;
+    /* should probably be fabs in C */
     if (abs(cnt1-cnt2)>cutoff) return -13.;
   }
   if(verbose>2)printf("tentropspks:minv1=%d,maxv1=%d,minv2=%d,maxv2=%d\n",minv1,maxv1,minv2,maxv2);

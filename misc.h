@@ -4,7 +4,7 @@
 #include <math.h>
 #include <limits.h> /* contains LONG_MAX */
 #include <time.h>
-#include <sys/time.h> 
+#include <sys/time.h>
 #include <float.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -55,10 +55,10 @@ typedef unsigned char   ui1;    /* one byte unsigned integer */
 typedef char        si1;    /* one byte signed integer */
 typedef unsigned short  ui2;    /* two byte unsigned integer */
 typedef short       si2;    /* two byte signed integer */
-typedef unsigned int    ui4;    /* four byte unsigned integer */ 
-typedef int     si4;    /* four byte signed integer */ 
-typedef float       sf4;    /* four byte signed floating point number */ 
-typedef double      sf8;    /* eight byte signed floating point number */ 
+typedef unsigned int    ui4;    /* four byte unsigned integer */
+typedef int     si4;    /* four byte signed integer */
+typedef float       sf4;    /* four byte signed floating point number */
+typedef double      sf8;    /* eight byte signed floating point number */
 
 extern double ERR,GET,SET,OK,NOP,ALL,NEG,POS,CHK,NOZ,GTH,GTE,LTH,LTE,EQU;
 extern double EQV,EQW,EQX,NEQ,SEQ,RXP,IBE,EBI,IBI,EBE;
@@ -94,6 +94,9 @@ extern void clear_event_queue();
 extern void cvode_fadvance(double);
 extern int hoc_is_tempobj_arg(int narg);
 extern Object* ivoc_list_item(Object*, int);
+extern double hoc_epsilon;
+extern int stoprun;
+extern void set_seed();
 #endif
 extern unsigned int hashseed2 (int na, double* x);
 extern unsigned int  dcrsz;
@@ -106,9 +109,6 @@ extern unsigned int  iscrsz;
 extern int *iscr;
 extern int *iscrset(int);
 extern double BVBASE;
-extern double hoc_epsilon;
-extern int stoprun;
-extern void set_seed();
 extern void dshuffle(double* x,int nx);
 extern void ishuffle(int* x,int nx);
 extern unsigned int valseed;
@@ -125,7 +125,6 @@ extern ListVec* AllocListVec(Object* p);
 extern ListVec* AllocILV(Object*, int, double *);
 void FillListVec(ListVec* p,double dval);
 void ListVecResize(ListVec* p,int newsz);
-extern short *nrn_artcell_qindex_;
 extern int IsList (Object* p);
 extern int uniq2 (int n, double *x, double *y, double *z);
 static void vprpr (double x, int base);
