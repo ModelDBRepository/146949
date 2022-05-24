@@ -499,8 +499,7 @@ unsigned int GetDVIDSeedVal(unsigned int id) {
   } else { 
     if (seadsetting==2) printf("Warning: GetDVIDSeedVal called with wt rand turned off\n");
     x[0]=(double)id; x[1]=seaddvioff;
-    /* the cast is trying to preserve (probably buggy) C behaviour in C++ */
-    sead=hashseed2(2, (double*)&x);
+    sead=hashseed2(2, x);
   }
   return sead;
 }
@@ -695,8 +694,7 @@ ENDVERBATIM
           sead=(unsigned int)(floor(_lflag)*ip->id*seedstep); // all integers
         } else { // hash on presynaptic id+FOFFSET,poid,seedstep
           hsh[0]=floor(_lflag); hsh[1]=(double)ip->id; hsh[2]=seedstep;
-          /* the cast is trying to preserve (probably buggy) C behaviour in C++ */
-          sead=hashseed2(3, (double*)&hsh); // hsh[] is just scratch pad
+          sead=hashseed2(3, hsh); // hsh[] is just scratch pad
         }
         mcell_ran4(&sead, &_args[sy], 2, 1.);
         for (ii=sy;ii<sy+2;ii++) { // scale appropriately; 
@@ -1502,8 +1500,7 @@ FUNCTION getdvi () {
               sead=(unsigned int)(FOFFSET+ip->id)*qp->id*seedstep; 
             } else { // hashed sead setting
               hsh[0]=(double)(FOFFSET+ip->id); hsh[1]=(double)(qp->id); hsh[2]=seedstep;
-              /* the cast is trying to preserve (probably buggy) C behaviour in C++ */
-              sead=hashseed2(3, (double*)&hsh);
+              usead=hashseed2(3, hsh);
             }
             mcell_ran4(&sead, y, 2, 1.);
             for(ii=0;ii<2;ii++) {
