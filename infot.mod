@@ -34,10 +34,6 @@ static void pdfpr (double* pdf,int szp,int dim, char* name);
 static double tetrospks3 (double* X1d,double* X2d,double* X3d,double* XO,int szX1,int szXO,int shuf);
 static int dbxi[10];
 
-static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,int shuf);
-static void pdfpr (double* pdf,int szp,int dim, char* name);
-static double tetrospks3 (double* X1d,double* X2d,double* X3d,double* XO,int szX1,int szXO,int shuf);
-
 typedef struct ITNode_ {
   int idims;
   int icount;
