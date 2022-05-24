@@ -1500,7 +1500,7 @@ FUNCTION getdvi () {
               sead=(unsigned int)(FOFFSET+ip->id)*qp->id*seedstep; 
             } else { // hashed sead setting
               hsh[0]=(double)(FOFFSET+ip->id); hsh[1]=(double)(qp->id); hsh[2]=seedstep;
-              usead=hashseed2(3, hsh);
+              sead=hashseed2(3, hsh);
             }
             mcell_ran4(&sead, y, 2, 1.);
             for(ii=0;ii<2;ii++) {
