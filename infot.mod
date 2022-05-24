@@ -413,8 +413,7 @@ double tentropd (double* x,double* y,int iLen,int nbins,int xpast,int ypast,int 
   dsum=0.0;
   *sig=-1e6;//init sig to neg
   *nTE = 0.0;
-  /* 2nd cntpx should probably be cntpxy */
-  sh=cntjxy=cntjx=cntpx=cntpx=0;   teavg=testd=te=teout=0.0;
+  sh=cntjxy=cntjx=cntpx=cntpxy=0;   teavg=testd=te=teout=0.0;
 
   px = nbins>0 ? getnormd(x,iLen,nbins) : doublep2intp(x,iLen); //discretize x to nbins, or just copy to ints
   py = nbins>0 ? getnormd(y,iLen,nbins) : doublep2intp(y,iLen); //discretize y to nbins, or just copy to ints
