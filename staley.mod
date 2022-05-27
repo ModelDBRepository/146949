@@ -32,8 +32,10 @@ PARAMETER {
 
 VERBATIM
 
-static double gsz(), gszspk();
-
+static double gszspk (double* channelData, int* spks, double* tots, int channelsLength,
+                      int intervalLength);
+static double gsz (double* channelData,double* diffcor,double* percentc,double* tots,
+                   int channelsLength,int intervalLength, int SgroupCount,int LintCnt);
 #include "misc.h"
 static  ListVec* pL;
 
@@ -54,7 +56,7 @@ typedef struct SEIZURE {
 sSeizure* AllocSeizure (int intervalIndex,int spikesCount)
 {
   sSeizure* p;
-  if(!(p = calloc(1,sizeof(sSeizure)))){
+  if(!(p = (sSeizure*)calloc(1,sizeof(sSeizure)))){
     printf("AllocSeizure ERR: out of memory!\n"); hxe();
   }
   p->startIntervalIndex = p->endIntervalIndex = intervalIndex;
@@ -73,7 +75,7 @@ typedef struct LSEIZURE {
 int InitLSeizure (LSeizure* pl,int sz) {
   pl->bufsz = sz;
   pl->count = 0;
-  if(sz==0) pl->pp=NULL; else pl->pp=calloc(sz,sizeof(sSeizure*));
+  if(sz==0) pl->pp=NULL; else pl->pp=(sSeizure**)calloc(sz,sizeof(sSeizure*));
   return pl->bufsz;
 }
 
@@ -88,7 +90,7 @@ int AddSeizure(LSeizure* pl, sSeizure* ps) {
   if( pl->count + 1 >= pl->bufsz ) {
     pl->bufsz *= 4;
     if(0)printf("pl=%p, realloc pl->count=%d, pl->bufsz=%d\n",pl,pl->count,pl->bufsz);
-    if(! (pl->pp=realloc(pl->pp,sizeof(sSeizure*)*pl->bufsz)) ) {
+    if(! (pl->pp=(sSeizure**)realloc(pl->pp,sizeof(sSeizure*)*pl->bufsz)) ) {
       printf("AddSeizure: out of memory!\n"); hxe();
     }
   }
@@ -124,7 +126,7 @@ static LSeizure* dgetseizures (double* channelData,int channelsLength) {
   // We first find the maxima and minima for groups of 25 points
   //** declarations and allocations
   int intervalIndex, dataIndex, seizureIndex, iS, stopIndex, uplim;
-  int intervalLength, channelIndex, i,j, intervalsCount, SgroupCount, true;
+  int intervalLength, channelIndex, i,j, intervalsCount, SgroupCount, true_var;
   int seizuresCount, spikesCount, totsLen, bufszStart, dbxi, ii, jj, LintCnt;
   double value, min_minS, max_maxS, HV, LV; //int value, min_minS, max_maxS, HV, LV;
   double diffc, totsum, diffthresh;
@@ -134,7 +136,7 @@ static LSeizure* dgetseizures (double* channelData,int channelsLength) {
   sSeizure *tmpSeizure, *currentSeizure, *nextSeizure; 
   tmpSeizure=currentSeizure=nextSeizure=0x0;
   diffcor=percentc=tots=0x0; spks=0x0;
-  if(!(pSeizuresOut=calloc(1,sizeof(LSeizure)))){printf("getseizures ERR: out of memory!\n");hxe();}
+  if(!(pSeizuresOut=(LSeizure*)calloc(1,sizeof(LSeizure)))){printf("getseizures ERR: out of memory!\n");hxe();}
   bufszStart=400;
   InitLSeizure(pSeizuresOut,bufszStart); InitLSeizure(&tmpSeizures,bufszStart);
   intervalLength = (int)Bintdur*samprate;
@@ -152,7 +154,7 @@ static LSeizure* dgetseizures (double* channelData,int channelsLength) {
     printf("getseizures ERRpcc: out of memory!\n"); hxe();  }            // but still calculated
   if(!(tots = (double*) calloc(intervalsCount,sizeof(double)))) {
     printf("getseizures ERRtts: out of memory!\n"); hxe();  }
-  if(!(spks=(unsigned int*) calloc((size_t)(jj=intervalsCount*Bintdur/Sintdur),sizeof(int)))) {
+  if(!(spks=(int*) calloc((size_t)(jj=intervalsCount*Bintdur/Sintdur),sizeof(int)))) {
     printf("getseizures ERRspk: out of memory!\n"); hxe();  }
   for (ii=0;ii<jj;ii++) spks[ii]=0; // clear
   totsLen = intervalsCount;
@@ -171,11 +173,11 @@ static LSeizure* dgetseizures (double* channelData,int channelsLength) {
   }
   if(incby1) for (ii=0; ii<intervalsCount; ii++) { // whole trace; ii=intervalIndex
     if (flag==0) {
-      true=(spks[ii]>minspikes && diffcor[ii]>diffthresh);
-    } else if (flag==1) {true=(spks[ii]>minspikes);
-    } else if (flag==2) {true=(diffcor[ii]>diffthresh);
+      true_var=(spks[ii]>minspikes && diffcor[ii]>diffthresh);
+    } else if (flag==1) {true_var=(spks[ii]>minspikes);
+    } else if (flag==2) {true_var=(diffcor[ii]>diffthresh);
     }
-    if (true) {
+    if (true_var) {
       if(seizuresCount==0 || tmpSeizure->endIntervalIndex!=ii-1)  { // new one
         seizuresCount++;
         AddSeizure(&tmpSeizures,tmpSeizure=AllocSeizure(ii,spks[ii]));
@@ -189,11 +191,11 @@ static LSeizure* dgetseizures (double* channelData,int channelsLength) {
   } // full trace loop; next intervalIndex pair
   else  for (ii=0; ii+1<intervalsCount; ii+=2) { // whole trace; ii=intervalIndex
     if (flag==0) {
-      true=(spks[ii]>minspikes && spks[ii+1]>minspikes && diffcor[ii]>diffthresh && diffcor[ii+1]>diffthresh);
-    } else if (flag==1) {true=(spks[ii]>minspikes && spks[ii+1]>minspikes);
-    } else if (flag==2) {true=(diffcor[ii]>diffthresh && diffcor[ii+1]>diffthresh);
+      true_var=(spks[ii]>minspikes && spks[ii+1]>minspikes && diffcor[ii]>diffthresh && diffcor[ii+1]>diffthresh);
+    } else if (flag==1) {true_var=(spks[ii]>minspikes && spks[ii+1]>minspikes);
+    } else if (flag==2) {true_var=(diffcor[ii]>diffthresh && diffcor[ii+1]>diffthresh);
     }
-    if (true) {
+    if (true_var) {
       if(seizuresCount==0 || tmpSeizure->endIntervalIndex!=ii-1)  { // new one
         seizuresCount++;
         AddSeizure(&tmpSeizures,tmpSeizure=AllocSeizure(ii,spks[ii]+spks[ii+1]));

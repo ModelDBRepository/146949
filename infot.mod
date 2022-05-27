@@ -29,7 +29,9 @@ VERBATIM
 #include <stdlib.h>
 #include <math.h>
 static const double* ITsortdata = NULL; /* used in the quicksort algorithm */
-static double tetrospks2(), pdfpr(), tetrospks3();
+static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,int shuf);
+static void pdfpr (double* pdf,int szp,int dim, char* name);
+static double tetrospks3 (double* X1d,double* X2d,double* X3d,double* XO,int szX1,int szXO,int shuf);
 static int dbxi[10];
 
 typedef struct ITNode_ {
@@ -42,9 +44,9 @@ typedef struct ITNode_ {
 
 ITNode* allocITNode(int idims) {
   ITNode* p;
-  p = calloc(1,sizeof(ITNode));
+  p = (ITNode*)calloc(1,sizeof(ITNode));
   if(!p) { printf("allocITNode: out of mem!\n"); hxe(); return 0x0; }
-  p->pvals = calloc(idims,sizeof(int));
+  p->pvals = (int*)calloc(idims,sizeof(int));
   return p;
 }
 
@@ -411,7 +413,7 @@ double tentropd (double* x,double* y,int iLen,int nbins,int xpast,int ypast,int 
   dsum=0.0;
   *sig=-1e6;//init sig to neg
   *nTE = 0.0;
-  sh=cntjxy=cntjx=cntpx=cntpx=0;   teavg=testd=te=teout=0.0;
+  sh=cntjxy=cntjx=cntpx=cntpxy=0;   teavg=testd=te=teout=0.0;
 
   px = nbins>0 ? getnormd(x,iLen,nbins) : doublep2intp(x,iLen); //discretize x to nbins, or just copy to ints
   py = nbins>0 ? getnormd(y,iLen,nbins) : doublep2intp(y,iLen); //discretize y to nbins, or just copy to ints
@@ -508,7 +510,7 @@ double tentropd (double* x,double* y,int iLen,int nbins,int xpast,int ypast,int 
       }
       if(verbose>1) {printf("cntjxy=%d\n",cntjxy);
         for(i=0;i<cntjxy;i++) {
-          printf("pjointxy%d: [");
+          printf("pjointxy: [");
           for(j=0;j<jointd;j++) printf("%d ",pjointxy[i][j]);
           printf("] , cnt=%d, p=%g\n",pjointxy[i][jointd],pjointxy[i][jointd]/(double)N);
         }
@@ -717,13 +719,13 @@ static double ntedir (void* vv) {
 // of X1spikecounts,X2spikecounts onto X3spikecounts
 static double tentropspks (void* vv) {
   double *X1,*X2,*XO,*X3; int szX1,szX2,szXO,shuf,szX3;
-  szX1 = vector_instance_px(vv,&X1);
+  szX1 = vector_instance_px((IvocVect*)vv,&X1);
   if((szX2=vector_arg_px(1,&X2))!=szX1) {
     printf("tentropspks ERRA: X1,X2 must have same size (%d,%d)\n",szX1,szX2); return -1.0; }
   szXO=ifarg(2)?vector_arg_px(2,&XO):0;
   shuf=ifarg(3)?((int)*getarg(3)):0;
   szX3=ifarg(4)?vector_arg_px(4,&X3):0;
-  if(szX3) tetrospks3(X1,X2,X3,XO,szX1,szXO,shuf);
+  if(szX3) return tetrospks3(X1,X2,X3,XO,szX1,szXO,shuf);
   else return tetrospks2(X1,X2,XO,szX1,szXO,shuf);
 }
 
@@ -761,8 +763,8 @@ NTEL2DOFREE:
 //*** Vind0.nte(Vind1,LIST,OUTVEC or OUTLIST) // do normalization with H(X2F|X2P)
 static double nte (void* vv) {
   int i, j, k, ii, jj, oi, nx, ny, omax, sz, ci, bg, flag, nshuf, szX, *x1i, *x2i, x1z, x2z;
-  ListVec *pLi; Object *obi,*ob;  double *x, *y, *out, o1, o2, cnt, *vvo[3]; void *vvl;
-  nx = vector_instance_px(vv, &x); // index i vector
+  ListVec *pLi; Object *obi,*ob;  double *x, *y, *out, o1, o2, cnt, *vvo[3]; IvocVect *vvl;
+  nx = vector_instance_px((IvocVect*)vv, &x); // index i vector
   ny = vector_arg_px(1, &y);       // index j vectors
   pLi = AllocListVec(obi=*hoc_objgetarg(2)); // input vectors
   ob =   *hoc_objgetarg(3);
@@ -859,7 +861,7 @@ double entropxfgxpd (double* pXP, double* pXFXP,int minv,int maxv,int szp) {
       if (usetable && tmp[3]>=MINLOG2 && tmp[3]<=MAXLOG2) {
         tmp[0] -=tmp[2]*_n_LOG2(tmp[3]);
       } else {  tmp[0] -=tmp[2]*  log2d(tmp[3]); if (usetable&&verbose>0.4) { 
-          printf("WARNA:%g outside of [%g,%g] TABLE\n",tmp[4],MINLOG2,MAXLOG2); }}}}
+          printf("WARNA:%g outside of [%g,%g] TABLE\n", tmp[3], MINLOG2, MAXLOG2); }}}}
   return tmp[0];        
 }
 
@@ -867,10 +869,10 @@ double entropxfgxpd (double* pXP, double* pXFXP,int minv,int maxv,int szp) {
 // Vector has elements of X
 static double entropxfgxp (void* vv) {
   double *x,*pXP,*pXFXP,dret;
-  int sz,minv,maxv,cnt,i,j,szp,*X;
-  sz = vector_instance_px(vv,&x);
+  int sz,minv,maxv,cnt,i,j,szp;
+  sz = vector_instance_px((IvocVect*)vv,&x);
   cnt=0;
-  X=scrset(sz);
+  unsigned int* X=scrset(sz);
   minv=1e9; maxv=-1e9;
   for (i=0;i<sz;i++) { 
     X[i]=(int)x[i]; 
@@ -1099,6 +1101,7 @@ static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,i
     cnt1/=sz; cnt2/=sz; // ignore if not enough of the windows are filled
     if (cnt1<binmin) return -11.; else if (cnt2<binmin) return -12.;
     if (binmax) if (cnt1>binmax) return -11.; else if (cnt2>binmax) return -12.;
+    /* should probably be fabs in C */
     if (abs(cnt1-cnt2)>cutoff) return -13.;
   }
   if(verbose>2)printf("tentropspks:minv1=%d,maxv1=%d,minv2=%d,maxv2=%d\n",minv1,maxv1,minv2,maxv2);
@@ -1165,7 +1168,7 @@ static double tetrospks2 (double* X1d,double* X2d,double* XO,int szX1,int szXO,i
 }
 
 // for debugging -- print out a pdf
-static double pdfpr (double* pdf,int szp,int dim, char* name) {
+static void pdfpr (double* pdf,int szp,int dim, char* name) {
   double x,ds; int i,j,k,l,m,cnt,*nonzero;
   ds=0.; 
   printf("Contents of PDF %s\n",name);
@@ -1306,9 +1309,9 @@ static double* ITgetrank (int n, double mdata[])
 { int i;
   double* rank;
   int* index;
-  rank = calloc(n,sizeof(double));
+  rank = (double*)calloc(n,sizeof(double));
   if (!rank) return NULL;
-  index = calloc(n,sizeof(int));
+  index = (int*)calloc(n,sizeof(int));
   if (!index)
   { free(rank);
     return NULL;
@@ -1394,13 +1397,13 @@ static double mutinfb (void* v) {
 
 double entropspksd (double* x,int sz) {
   double *px,ret,dinf,size;
-  int i,*X,maxv,minv,cnt,err;
+  int i,maxv,minv,cnt,err;
   if(sz<1) {printf("entropspks ERR0: min size must be > 0!\n"); return -1.0;}
   size=(double)sz;
   ret=-1.0; err=0;
   px=NULL; 
   minv=1000000000; maxv=-1000000000;
-  X=scrset(sz*2); // move into integer arrays
+  unsigned int* X=scrset(sz*2); // move into integer arrays
   cnt=0;
   for (i=0;i<sz;i++) { 
     X[i]=(int)x[i]; 
