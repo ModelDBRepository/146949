@@ -2619,7 +2619,12 @@ proc sv () { local i,j,cd,cd1,vers,a,aflag,nx,no,ns,svinfo localobj xo,v1,v2
   if (svinfo) {
     savenums(nx,no,ns) 
     if (nx>0) savenums(&info.x,nx)
-    for ii=0,no-1 {xo=info.o(ii) if (isojt(xo,v)) xo.vwrite(tmpfile) }
+    for ii=0,no-1 {
+      xo=info.o[ii]
+      if (isojt(xo,v)) {
+        xo.vwrite(tmpfile)
+      }
+    }
     if (ns>0) wrvstr(info.s) if (ns>1) wrvstr(info.t) 
     if (ns>2) wrvstr(info.u) if (ns>3) wrvstr(info.v) 
   }
@@ -2684,7 +2689,10 @@ func rd () { local n,vers,hflag,cd,cd1,cd3,cd4,ii,oco,nx,no,ns,svinfo localobj v
   if (svinfo) {
     readnums(&nx,&no,&ns) 
     if (nx>0) readnums(&info.x[0])
-    for ii=0,no-1 {info.o(ii)=new Vector() info.o(ii).vread(tmpfile) }
+    for ii=0,no-1 {
+      info.o[ii] = new Vector()
+      info.o[ii].vread(tmpfile)
+    }
     if (ns>0) rdvstr(info.s) if (ns>1) rdvstr(info.t) 
     if (ns>2) rdvstr(info.u) if (ns>3) rdvstr(info.v) 
   }
