@@ -57,3 +57,6 @@ OS X.
 20220517 Updated MOD files to contain valid C++ and be compatible with
 the upcoming versions 8.2 and 9.0 of NEURON. Updated to use post ~2011
 signature of mcell_ran4_init function and fix hashseed2 argument.
+
+20230228 Fix error due to inconsistent array dimensions. Required by
+https://github.com/neuronsimulator/nrn/pull/2024 in NEURON 9+.
