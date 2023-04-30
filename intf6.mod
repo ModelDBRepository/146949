@@ -25,6 +25,16 @@ VERBATIM
 #include "misc.h"
 #include <unistd.h>
 
+#ifdef NRN_MECHANISM_DATA_IS_SOA
+#define get_dparam(prop) _nrn_mechanism_access_dparam(prop)
+#define get_type(prop) _nrn_mechanism_get_type(prop)
+#define id0ptr(prop) static_cast<id0*>(_nrn_mechanism_access_dparam(prop)[2].get<void*>())
+#else
+#define get_dparam(prop) prop->dparam
+#define get_type(prop) prop->_type
+#define id0ptr(prop) (*((id0**)&(prop->dparam[2])))
+#endif
+
 static int ctt(unsigned int, char**);
 static void setdvi2(double*,double*,char*,int,int,double*,double*);
 static void setdvi3(double*,double*,char*,int,double*,double*);
@@ -533,8 +543,15 @@ ENDVERBATIM
       if (_lflag==2) ip->flag=-1; 
       idty=(double)(FOFFSET+ip->id)+1e-2*(double)ip->type+1e-3*(double)ip->inhib+1e-4;
       for (i=0;i<ip->dvt && !stoprun;i++) if (ip->sprob[i]) {
-        (*pnt_receive[ip->dvi[i]->_prop->_type])(ip->dvi[i], wts, idty); 
-        _p=_pnt->_prop->param; _ppvar=_pnt->_prop->dparam; ip=IDP; // restore pointers each time
+        (*pnt_receive[get_type(ip->dvi[i]->_prop)])(ip->dvi[i], wts, idty);
+        // restore pointers each time
+#ifdef NRN_MECHANISM_DATA_IS_SOA
+        neuron::legacy::set_globals_from_prop(_pnt->_prop, _ml_real, _ml, _iml);
+#else
+        _p=_pnt->_prop->param;
+#endif
+        _ppvar = get_dparam(_pnt->_prop);
+        ip=IDP;
       }
       return;  // else see if destination has been reached
     } else if (_lflag!=2 && (pathtytarg==(double)ip->type || pathidtarg==(double)ip->id)) {
@@ -1301,14 +1318,20 @@ PROCEDURE callback (fl) {
     if(wsetting==1.0 && jp->syw1 && jp->syw2) {wts[2]=jp->syw1[i]; wts[3]=jp->syw2[i]; } // non-MATRIX weights?
     idtflg = idty + (1e-5 * jp->syns[i]);
     // if(1) printf("s = %g : flg = %.10f\n",(1e-5*jp->syns[i]),idtflg);
-    if (jp->sprob[i]) (*pnt_receive[jp->dvi[i]->_prop->_type])(jp->dvi[i], wts, idtflg); 
-    _p=upnt->_prop->param; _ppvar=upnt->_prop->dparam; // restore pointers
+    if (jp->sprob[i]) (*pnt_receive[get_type(jp->dvi[i]->_prop)])(jp->dvi[i], wts, idtflg);
+    // restore pointers
+#ifdef NRN_MECHANISM_DATA_IS_SOA
+    neuron::legacy::set_globals_from_prop(upnt->_prop, _ml_real, _ml, _iml);
+#else
+    _p=upnt->_prop->param;
+#endif
+    _ppvar = get_dparam(upnt->_prop);
     i++;
     if (i>=jp->dvt) return 0; // ran out
     ddel=jp->del[i]-del0;   // delays are relative to event; use difference in delays
   }
   // skip over pruned outputs and dead cells:
-  while (i<jp->dvt && (!jp->sprob[i] || (*(id0**)&(jp->dvi[i]->_prop->dparam[2]))->dead)) i++;
+  while (i<jp->dvt && (!jp->sprob[i] || id0ptr(jp->dvi[i]->_prop)->dead)) i++;
   if (i<jp->dvt) {
     ddel= jp->del[i] - del0;;
   #if defined(t)
@@ -1479,7 +1502,7 @@ FUNCTION getdvi () {
     idty=(double)(FOFFSET+ip->id)+1e-2*(double)ip->type+1e-3*(double)ip->inhib+1e-4;
     prty=ip->type; sy=ip->inhib?GA:AM;
     for (i=0,j=0;i<dvt;i++) {
-      qp=*((id0**) &((das[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+      qp = id0ptr(das[i]->_prop); // #define sop *_ppvar[2].pval
       if (getactive && (qp->dead || ip->sprob[i]==0)) continue;
       if (flag==1) { x1[j]=(double)qp->type; 
       } else if (flag==2) { x1[qp->type]++; 
@@ -1546,7 +1569,7 @@ VERBATIM
     dvt=qp->dvt; das=qp->dvi;
     for (j=0;j<dvt;j++) {
       if (getactive && qp->sprob[j]==0) continue;
-      if (ip==*((id0**) &((das[j]->_prop->dparam)[2]))) {
+      if (ip == id0ptr(das[j]->_prop)) {
         if (prfl) {
           if (flag!=2.0 && k>=sz) x=vector_newsize(voi,sz*=2);
           if (flag==1.0) { x[k]=(double)qp->type; 
@@ -1588,7 +1611,7 @@ FUNCTION adjlist () {
     }
     iSyns=0;
     for(j=0;j<qp->dvt;j++){      
-      rp=*((id0**) &((qp->dvi[j]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval      
+      rp = id0ptr(qp->dvi[j]->_prop); // #define sop *_ppvar[2].pval
       if(skipinhib && rp->inhib) continue; // if skip inhib cells...
       if(!rp->dead && qp->sprob[j]>0. && !pused[rp->id]){      
         pused[rp->id]=1;
@@ -1666,7 +1689,7 @@ FUNCTION svdvi () {
     if(!qp->dvt)continue; //don't write empty pointers if no divergence
     for(i=0;i<qp->dvt;i++){
       pnnt=qp->dvi[i];
-      fwrite(&(*(id0**)&(pnnt->_prop->dparam[2]))->id,sizeof(unsigned int),1,fp); // id of output cell
+      fwrite(&(id0ptr(pnnt->_prop)->id), sizeof(unsigned int), 1, fp); // id of output cell
     }
     fwrite(qp->del,sizeof(double),qp->dvt,fp); // write divergence delays
     fwrite(qp->sprob,sizeof(unsigned char),qp->dvt,fp); // write divergence firing probabilities
@@ -1854,7 +1877,7 @@ int* getpeconv (id0* ip,int* psz) {
     dvt=qp->dvt;
     das=qp->dvi;
     for (j=0;j<dvt;j++) {
-      if (ip==*((id0**) &((das[j]->_prop->dparam)[2]))) {
+      if (ip == id0ptr(das[j]->_prop)) {
         if (k>=*psz) {
           psz[0]*=2;
           pfrom=(int*) realloc((void*)pfrom,psz[0]*sizeof(int));
@@ -1881,7 +1904,7 @@ int* getpiconv (id0* ip,int* psz) {
     dvt=qp->dvt;
     das=qp->dvi;
     for (j=0;j<dvt;j++) {
-      if (ip==*((id0**) &((das[j]->_prop->dparam)[2]))) {
+      if (ip == id0ptr(das[j]->_prop)) {
         if (k>=*psz) {
           psz[0]*=2;
           pfrom=(int*) realloc((void*)pfrom,psz[0]*sizeof(int));
@@ -1901,7 +1924,7 @@ int myfindidx (id0* ppre,int poid) {
   int i; Point_process** das; id0* ppo;
   das=ppre->dvi;
   for(i=0;i<ppre->dvt;i++) {
-    ppo=*((id0**) &((das[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+    ppo = id0ptr(das[i]->_prop); // #define sop *_ppvar[2].pval
     if(ppo->id==poid) return i;
   }
   return -1;
@@ -1931,7 +1954,7 @@ static void applyEDOPE (id0* pcell,double myspkt) {
   if (BACKELIGTR) { // if backward eligibility traces are turned on (pre after post)
     if(pcell->inhib) return; // only EDOPE from E cells
     for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if they fired within maxplastt, turn on eligibility trace
-      ppo=*((id0**) &((pcell->dvi[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+      ppo = id0ptr(pcell->dvi[i]->_prop); // #define sop *_ppvar[2].pval
       poid = ppo->id;
       if(pg->lastspk[poid]<0) continue;
       if( (d = myspkt - pg->lastspk[poid] ) <= maxplastt) {
@@ -1970,7 +1993,7 @@ static void applyIDOPE (id0* pcell,double myspkt) {
   if(BACKELIGTR) { // if backward eligibility traces are turned on (pre after post)
     if(!pcell->inhib) return; // IDOPE only from I cells
     for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if within maxplastt, 
-      ppo=*((id0**) &((pcell->dvi[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+      ppo = id0ptr(pcell->dvi[i]->_prop); // #define sop *_ppvar[2].pval
       poid = ppo->id;
       if(pg->lastspk[poid]<0) continue;
       if( (d = myspkt - pg->lastspk[poid] ) <= maxplastt) {
@@ -2009,7 +2032,7 @@ static void applyEXSTDP (id0* pcell,double myspkt) {
   }
   if(pcell->inhib) return; // only STDP from E cells
   for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if they fired earlier, depress the synapse
-    ppo=*((id0**) &((pcell->dvi[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+    ppo = id0ptr(pcell->dvi[i]->_prop); // #define sop *_ppvar[2].pval
     poid = ppo->id;
     if(pg->lastspk[poid]<0) continue;
     if( (d = myspkt - pg->lastspk[poid] ) < maxplastt) {
@@ -2053,7 +2076,7 @@ static void applyIXSTDP (id0* pcell,double myspkt) {
   }
   if(!pcell->inhib) return; // this STDP only from I cells
   for(i=0;i<pcell->dvt;i++) { // check postsynaptic targets, if they fired earlier, potentiate the synapse
-    ppo=*((id0**) &((pcell->dvi[i]->_prop->dparam)[2])); // #define sop	*_ppvar[2].pval
+    ppo = id0ptr(pcell->dvi[i]->_prop); // #define sop *_ppvar[2].pval
     poid = ppo->id;
     if(pg->lastspk[poid]<0) continue;
     if( (d = myspkt - pg->lastspk[poid] ) < maxplastt) {
@@ -2267,7 +2290,7 @@ static void setdvi2 (double *y,double *d,char* s,int dvt,int flag,double* w1,dou
     if (!(lb=ivoc_list_item(pg->ce,(unsigned int)y[j]))) {
       printf("INTF6:callback %g exceeds %d for list ce\n",y[j],pg->cesz); hxe(); }
       pnnt=(Point_process *)lb->u.this_pointer;
-      if (ddvi==1 || !(pdead=(*(id0**)&(pnnt->_prop->dparam[2]))->dead)) {
+      if (ddvi==1 || !(pdead = id0ptr(pnnt->_prop)->dead)) {
         da[i]=pnnt; db[i]=d[j]; syns[i]=s?s[j]:0; 
         if(wsetting==1){w1s[i]=w1[j]; w2s[i]=w2[j];}
         i++;
@@ -2307,7 +2330,7 @@ static void setdvi3 (double *y, double *d, char* s, int dvt, double* w1, double*
     if (!(lb=ivoc_list_item(pg->ce,(unsigned int)y[j]))) {
       printf("INTF6:callback %g exceeds %d for list ce\n",y[j],pg->cesz); hxe(); }
       pnnt=(Point_process *)lb->u.this_pointer;
-      if (ddvi==1 || !(pdead=(*(id0**)&(pnnt->_prop->dparam[2]))->dead)) {
+      if (ddvi==1 || !(pdead = id0ptr(pnnt->_prop)->dead)) {
         da[i]=pnnt; db[i]=d[j]; syns[i]=s?s[j]:0; 
         w1s[i]=w1[j]; w2s[i]=w2[j];
       }
@@ -2342,7 +2365,7 @@ PROCEDURE prune () {
       for (j=0;j<ip->dvt;j++) if (dscr[j]<p) ip->sprob[j]=0; // prune with prob p
     } else { // only prune synapses with postsynaptic type == potype
       for (j=0;j<ip->dvt;j++){
-        ppost=*((id0**) &((ip->dvi[j]->_prop->dparam)[2])); // #define sop *_ppvar[2].pval
+        ppost = id0ptr(ip->dvi[j]->_prop); // #define sop *_ppvar[2].pval
         if (ppost->type==potype && dscr[j]<p) ip->sprob[j]=0; // prune with prob p
       }
     }
@@ -2387,7 +2410,7 @@ PROCEDURE turnoff () {
     lop(pg->ce,(unsigned int)x[i]); 
     dvt=qp->dvt; das=qp->dvi;
     for (j=0;j<dvt;j++) {
-      ip=*((id0**) &((das[j]->_prop->dparam)[2])); // sop is *_ppvar[2].pval
+      ip = id0ptr(das[j]->_prop); // sop is *_ppvar[2].pval
       poid=(double)ip->id; // postsyn id
       for (k=0;k<ny;k++) {
         if (poid==y[k]) {
@@ -3070,7 +3093,7 @@ static id0* getlp (Object *ob, unsigned int i) {
   lb = ivoc_list_item(ob, i);
   if (! lb) { printf("INTF6:getlp %d exceeds %d for list ce\n",i,pg->cesz); hxe();}
   pmt=ob2pntproc(lb);
-  myp=*((id0**) &((pmt->_prop->dparam)[2])); // #define sop *_ppvar[2].pval
+  myp = id0ptr(pmt->_prop); // #define sop *_ppvar[2].pval
   return myp;
 }
 
@@ -3081,7 +3104,7 @@ static id0* lop (Object *ob, unsigned int i) {
   lb = ivoc_list_item(ob, i);
   if (! lb) { printf("INTF6:lop %d exceeds %d for list ce\n",i,pg->cesz); hxe();}
   pmt=ob2pntproc(lb);
-  qp=*((id0**) &((pmt->_prop->dparam)[2])); // #define sop *_ppvar[2].pval
+  qp = id0ptr(pmt->_prop); // #define sop *_ppvar[2].pval
   return qp;
 }
 
