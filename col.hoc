@@ -198,7 +198,8 @@ proc nsstim () { local a,sy,sdx,idx,sglo,sghi,hzlo,hzhi,ct,se localobj rdm,vsy,v
         rsl.append( rds = new Random() )
         rds.negexp(1) // set random # generator using negexp(1) - avg interval in NetStim.interval
         rds.MCellRan4(se,se)  // seeds are in order, shouldn't matter
-        ns.noiseFromRandom(rds) // use random # generator for this NetStim
+        //ns.noiseFromRandom(rds) // use random # generator for this NetStim
+        ns.noiseFromRandom123(se, se, 0) // compatible back to 2016
         vrse.append(se) // save random # seed
 
         ncl.append( nc = new NetCon(ns,col.ce.o(idx)) ) // set the connection (netstim->postsynaptic INTF6 cell)
