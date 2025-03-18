@@ -16,10 +16,10 @@ proc init () {
   avg=$1 shape=$2
   if(numarg()>2)seed=$3 else seed=1234
   rd=new Random()
-  rd.ACG(seed)
+  rd.Random123(seed)
 }
 proc reset () {
-  rd.ACG(seed)
+  rd.Random123(seed)
 }
 func paretoc () { local scale,shape,U
   scale=$1 shape=$2 U = rd.uniform(0,1)
@@ -78,7 +78,10 @@ RS1M=0 //mean of group 1
 RS0SD=1 //sdev of group 0
 RS1SD=1 //sdev of group 1
 proc rsi () {
-  if(myrdm==nil) myrdm=new Random()  
+  if(myrdm==nil){
+myrdm=new Random()
+myrdm.Random123()
+  }
   {myrdm.normal(RS0M,RS0SD) vIN0=new Vector(R0SZ) vIN0.setrand(myrdm)}  
   {myrdm.normal(RS1M,RS1SD) vIN1=new Vector(R1SZ) vIN1.setrand(myrdm)}
   vhsout=new Vector(vIN0.size+vIN1.size)
@@ -131,7 +134,7 @@ obfunc nhppvec () { local i,dt,tt,maxt,maxi,se,tidx localobj tvec,ivec,rdm
   ivec=$o1 dt=$2 maxt=$3
   if(numarg()>3)se=$4 else se=1234
   rdm=new Random()
-  rdm.ACG(se)
+  rdm.Random123(se)
   tt=0
   maxi=ivec.max
   while(tt<maxt) {

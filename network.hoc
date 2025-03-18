@@ -556,7 +556,7 @@ proc dokill () { local id
 //$1=cell type to kill,$2=prct of cells to kill,$o3=vq stim nqs,$4=out vector of kill ids,$5=rnd seed
 func getkillids () { local killcnt,i,j,ct,prct localobj vq,vkid,rd
   ct=$1 prct=$2 vq=$o3 vkid=$o4 killcnt=int(prct*numc[ct]) vkid.resize(0) j=0 i=ix[ct]
-  rd=new Random() rd.ACG($5)
+  rd=new Random() rd.Random123($5)
   while(j<killcnt){
     i=rd.discunif(ix[ct],ixe[ct])
     if(!vq.v[0].contains(i)){
@@ -579,7 +579,7 @@ n=ty=id=0
 //* sprcells() sprout cells in specific pathways using sprmat, $1=seed for rand generator
 //max div is still 0.75*poty
 func sprcells () { local id,a,prty,poty,sz,ls,mx,i localobj vid,vnewid,vnewdel,rd,vd,vtmp
-  ls=$1 a=allocvecs(vid,vnewid,vnewdel,vd,vtmp) rd=new Random() rd.ACG(ls)
+  ls=$1 a=allocvecs(vid,vnewid,vnewdel,vd,vtmp) rd=new Random() rd.Random123(ls)
   for prty=0,CTYPi-1 for poty=0,CTYPi-1 if(sprmat[prty][poty]) for id=ix[prty],ixe[prty] {
     ce.o(id).getdvi(vid) ce.o(id).getdvi(0.2,vd)
     sz=div[prty][poty][0]*sprmat[prty][poty] mx=0.75*numc[poty]
@@ -754,7 +754,7 @@ proc setcellpos () { local i,z,x,y,zvar,c,ctyp,zmin,zmax localobj rdm,vz
   if(numarg()>1) zvar=$3 
   if(numarg()>2) pseed=$4
   if(numarg()>3) cside=$5
-  {rdm=new Random() rdm.ACG(pseed)}
+  {rdm=new Random() rdm.Random123(pseed)}
   c=-1
   if(col.cellsnq!=nil) c=col.cellsnq.fi("xloc")
   for i=0,col.allcells-1 {
@@ -995,7 +995,7 @@ proc swirecut() { local x,y,z,ii,jj,a,del,prid,poid,prty,poty,dv,lseed,h,prob,sl
 
   // Set up random number stuff.
   hashseed_stats(lseed,lseed,lseed)
-  rdm=new Random() rdm.ACG(lseed) // initdivrnd(lseed)//initialize random # generator
+  rdm=new Random() rdm.Random123(lseed) // initdivrnd(lseed)//initialize random # generator
   rdm.uniform(0,1) vprob.resize(ce.count^2) vprob.setrand(rdm) pdx=0
 
   // Create the connectivity NQS table.
@@ -1073,7 +1073,7 @@ proc swirecut() { local x,y,z,ii,jj,a,del,prid,poid,prty,poty,dv,lseed,h,prob,sl
 
 //* checkerpos - arrange cells in checkerboard pattern
 proc checkerpos () { local i,j,x,y,xn,yn,csz,ssz,incsz,mnx,mxx,mny,mxy,a localobj col,ce,rdm,xo,vox,vex,voy,vey
-  col=$o1 csz=col.cdiam ssz=$2 incsz=$3 rdm=new Random() rdm.ACG($4)
+  col=$o1 csz=col.cdiam ssz=$2 incsz=$3 rdm=new Random() rdm.Random123($4)
   ce=col.ce
   a=allocvecs(vox,vex,voy,vey)
 

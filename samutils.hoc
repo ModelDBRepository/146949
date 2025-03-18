@@ -1063,7 +1063,7 @@ objref r_uniform
 
 proc InitRand(){
   r_uniform = new Random(1234567891011121314)
-  my_ran_ind = r_uniform.MCellRan4()
+  my_ran_ind = r_uniform.Random123()
   r_uniform.uniform(0,1)
 }
 

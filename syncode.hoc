@@ -1570,7 +1570,7 @@ func nrstim () { local a,tt,i,j,ti,maxt,ct localobj rdp,vr,vt,vi,nq
   if(numarg()>2) {
     if($3) nq.clear() 
   } else nq.clear()  
-  if(numarg()>3) rdp.ACG($4) else rdp.ACG(1234)
+  if(numarg()>3) rdp.Random123($4) else rdp.Random123(1234)
   rdp.normal(pwght,pvar)
   vt.indgen(0,maxt,1000/prate) vi.resize(vt.size) vr.resize(vt.size)
   for i=ix[$1],ixe[$1] {

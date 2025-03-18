@@ -739,7 +739,7 @@ obfunc GetCellNQ () { local i,id,n,doexl,doexcc,doconv,doC,dodiv,doblk\
 obfunc GetRandCellNQ () { local i localobj nq,rd
   nq=new NQS("id","type","rand")
   rd=new Random()
-  rd.ACG($1)
+  rd.Random123($1)
   for i=0,allcells-1 nq.append(i,ce.o(i).type,rd.normal(0,1))
   return nq
 }

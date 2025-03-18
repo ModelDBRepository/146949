@@ -37,7 +37,7 @@ dosetexvals=name_declared("wmatex")==0 // whether to set values in wmatex,ratex
 
 {declare("fih","o[1]","nstim","o[1]")}
 {vseed_stats(223481)}
-{rdm.MCellRan4(seed_stats)}
+{rdm.Random123(seed_stats)}
 {declare("vsgrpp",new Vector(CTYPi))} //% X 100 of cells of a type to stim, used in stim,sgrcells
 {declare("vsgrsidx",new Vector(CTYPi))} //startind index of cell to stim when using topstim
 {declare("sgrdur",mytstop)} //duration of stim in ms -- change this to turn off stimuli
@@ -633,7 +633,7 @@ proc mkSMG () { local i,j,x,y,xx,yy localobj c
 
 //* mkSMstim - make sensory stims that are sent to SM cells - based on nqpath
 proc mkSMstim () { local i,j,k,x,y,cdx,tt,a localobj vec,vt,vq,vx,vy,rdm
-  {a=allocvecs(vec) vq=col.cstim.vq rdm=new Random() rdm.ACG(SMSEED)} 
+  {a=allocvecs(vec) vq=col.cstim.vq rdm=new Random() rdm.Random123(SMSEED)}
   vq.clear(col.numc[SM]*tstop)
   {vt=nqpath.v[0] vx=nqpath.v[1] vy=nqpath.v[2]}
   for i=0,nqpath.v.size-1 {
@@ -658,7 +658,7 @@ obfunc mknqpath () { local maxx,maxy,tt,tinc,x,y,incx,incy,tend,dir,s,sd,twopi\
   {rdm=new Random() maxx=$1 maxy=$2 tt=0 tinc=$3 x=maxx/2 y=maxy/2 tend=$4}
   if(numarg()>5) s=$6 else s=1234
   if(numarg()>4) sd=$5 else sd=PI/32
-  {rdm.ACG(s) nqp=new NQS("t","x","y","dir")}
+  {rdm.Random123(s) nqp=new NQS("t","x","y","dir")}
   {twopi=2*PI dir=rdm.uniform(0,twopi)} // direction 0-360 degrees
   for(tt=SMSTART;tt<=tend;tt+=tinc) {
 
@@ -794,6 +794,7 @@ proc setcellgroupshock () { local ii,cellprct,pickthiscell localobj clist,randco
 
   // Set up a random uniform distribution generator.
   randcond = new Random(inputseed)
+  randcond.Random123()
   randcond.uniform(0,1)
 
   // Create shock NetStim for all of the cells.

@@ -180,7 +180,7 @@ proc mkspks () { local tmax,rate,t,dt,intt,off,i,alpha localobj rdp
   if(numarg()>3)alpha=$4 else alpha=1
   intt=1e3/rate
   rdp=new Random()
-  rdp.ACG(1234)
+  rdp.Random123(1234)
   rdp.poisson(intt)
   for i=0,1 vs[i].resize(0)
   vs[0]=mkspktrain(rdp,rate,tmax)

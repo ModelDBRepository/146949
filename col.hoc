@@ -64,7 +64,7 @@ proc setspks () { local cd,se,ndx localobj rdm,ce,intf
     printf("CSTIM: no cells to stim!\n")
     return
   }
-  intf=ce.o(0) rdm=new Random() rdm.ACG(iseed) //initialize Random object
+  intf=ce.o(0) rdm=new Random() rdm.Random123(iseed) //initialize Random object
   if(vq==nil) vq=new NQS("ind","time","wt","sy") else vq.clear() //NQS storing INTF6 spike times
   intf.clrvspks() //clear INTF6 spike times
   if(sgrdur>0) {
@@ -107,7 +107,7 @@ proc jitterspks () { local a,jmin,jmax,seed localobj v1,rdm
   if(numarg()>1) jmax=$2 else jmax=1e-6
   if(numarg()>2) seed=$3 else seed=1234
   rdm=new Random()
-  rdm.ACG(seed)
+  rdm.Random123(seed)
   rdm.uniform(jmin,jmax)
   v1.resize(vq.v.size)
   v1.setrand(rdm)  
@@ -146,7 +146,7 @@ proc pulsestim () { local nspk,tt,i,j,nrate,ti,maxt localobj rdp,vqtmp
   if(numarg()>2) {
     if($3) vq.clear() 
   } else vq.clear()  
-  if(numarg()>3) rdp.ACG($4) else rdp.ACG(1234)
+  if(numarg()>3) rdp.Random123($4) else rdp.Random123(1234)
   vqtmp=new NQS()
   tt=1 rdp.poisson(1000/nrate)
   while(tt<=maxt) {
@@ -170,7 +170,7 @@ proc initrands () { local i,se localobj rds
   for i=0,vrse.size-1 {
     rds = rsl.o(i)       // go thru Random objects 
     se = vrse.x(i)       // seed previously used
-    rds.MCellRan4(se,se) // initialize MCellRan4 Random # generator
+    rds.Random123(se,se) // initialize Random # generator
     rds.negexp(1)        // must be called this way 
   }
 }
@@ -195,10 +195,12 @@ proc nsstim () { local a,sy,sdx,idx,sglo,sghi,hzlo,hzhi,ct,se localobj rdm,vsy,v
         ns.noise = 1 // make it fully random
         ns.interval = 1e3 / vhz.x(idx-col.ix[ct]) // avg interval btwn the inputs
 
-        rsl.append( rds = new Random() )
+        rds = new Random()
+        rds.Random123(se,se)  // seeds are in order, shouldn't matter
+        rsl.append( rds )
         rds.negexp(1) // set random # generator using negexp(1) - avg interval in NetStim.interval
-        rds.MCellRan4(se,se)  // seeds are in order, shouldn't matter
-        ns.noiseFromRandom(rds) // use random # generator for this NetStim
+        //ns.noiseFromRandom(rds) // use random # generator for this NetStim
+        ns.noiseFromRandom123(se, se, 0) // compatible back to 2016
         vrse.append(se) // save random # seed
 
         ncl.append( nc = new NetCon(ns,col.ce.o(idx)) ) // set the connection (netstim->postsynaptic INTF6 cell)
@@ -541,7 +543,7 @@ proc init () { local skipwire
 //** initdivrnd(seed) - initializes random object for wiring
 obfunc initdivrnd () { local s localobj rd
   s=$1
-  if(setdviPT==PARETO) rd=new rdmpareto(1,PARETOSH,s) else {rd=new Random() rd.ACG(s)}
+  if(setdviPT==PARETO) rd=new rdmpareto(1,PARETOSH,s) else {rd=new Random() rd.Random123(s)}
   return rd
 }
 
@@ -652,7 +654,7 @@ proc wire () { local x,y,z,ii,jj,a,del,prid,prty,poty,dv,dvt,lseed,dvrand,szo\
   if (argtype(1)==0) lseed=$1 else lseed=1234
   vrsz(1e4,vidx,vdel,vdist,vtmp)
   vrsz(ce.count*CTYPi,vdvd)
-  {rdm=new Random() rdm.MCellRan4(lseed,lseed)}
+  {rdm=new Random() rdm.Random123(lseed,lseed)}
   if(dgcor){dvrand=0.2 rdm.uniform(.8,1.2) vdvd.setrand(rdm)}// div variability of 20% when dgcor==1
   rdmDV=initdivrnd(lseed)//initialize random # generator for use when dgcor==0
   // Create the connectivity NQS table.
@@ -703,7 +705,7 @@ func wire2col () { local d,from,to,sz,dvm,dv,pij,dlym,dlyd,w1,w2,sy1,sy2,loc,i,i
   {vpij=nq.getcol("pij") vloc=nq.getcol("loc")}
   if(verbose) print "tcol.wseed = ",tcol.wseed, " vfrom.size = ",vfrom.size
   rdmDV=initdivrnd(tcol.wseed)//initialize random # generator
-  {rdm=new Random() rdm.MCellRan4(tcol.wseed,tcol.wseed)}
+  {rdm=new Random() rdm.Random123(tcol.wseed,tcol.wseed)}
   if (mknetnqss && xcolconnsnq==nil) xcolconnsnq=new NQS("id1","col2","id2","del","wt1","wt2")
   i=0
   while(i<vfrom.size) {
@@ -766,7 +768,7 @@ proc setcellpos () { local i,z,x,y,zvar,c localobj rdm,vz
   if(numarg()>1) zvar=$2 
   if(numarg()>2) pseed=$3
   if(numarg()>3) cside=$4
-  {rdm=new Random() rdm.ACG(pseed)}
+  {rdm=new Random() rdm.Random123(pseed)}
   c=-1
   if(cellsnq!=nil) c=cellsnq.fi("xloc")
   for i=0,allcells-1 {
